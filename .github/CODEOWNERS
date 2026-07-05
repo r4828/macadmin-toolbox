@@ -1,0 +1,7 @@
+# Default owner for everything in the repo.
+# Every pull request requests a review from these owners automatically.
+* @r4828
+
+# Add area-specific owners as the project grows, for example:
+# /jamf/    @r4828 @some-jamf-contributor
+# /mdm/     @r4828

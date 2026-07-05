@@ -1,0 +1,46 @@
+name: Bug report
+description: A script or config here doesn't work as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The more specific you are, the faster this gets fixed.
+        If this is a leaked secret or a dangerous script, stop and read SECURITY.md instead. Don't post it here.
+  - type: input
+    id: script
+    attributes:
+      label: Which script or config
+      description: Path in the repo, e.g. jamf/extension-attributes/foo.sh
+      placeholder: jamf/...
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you expect, and what did you get instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to reproduce
+      description: How you ran it (Jamf policy, Terminal, etc.) and the steps to hit the problem.
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and hardware
+      placeholder: macOS 15.5, Apple silicon
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output or logs
+      description: Paste relevant output. Scrub any secrets, serial numbers, or real URLs first.
+      render: shell
+    validations:
+      required: false

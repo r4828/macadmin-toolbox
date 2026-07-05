@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: MacAdmins Slack
+    url: https://www.macadmins.org
+    about: For general MDM and Jamf questions, the MacAdmins Slack community is usually the fastest place to get help.

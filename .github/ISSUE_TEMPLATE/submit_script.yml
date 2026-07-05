@@ -1,0 +1,34 @@
+name: Suggest or submit a script
+description: Propose a new script or tool, or offer one you've written.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have code ready to go? A pull request is faster than an issue. See CONTRIBUTING.md.
+        Use this form to float an idea or check whether something fits before you build it.
+  - type: textarea
+    id: what
+    attributes:
+      label: What should it do
+      description: The problem it solves and roughly how.
+    validations:
+      required: true
+  - type: dropdown
+    id: folder
+    attributes:
+      label: Where it belongs
+      options:
+        - jamf (Jamf Pro specific)
+        - mdm (vendor-neutral)
+        - configs (profiles / preferences)
+        - not sure
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: Prior art, related tools, gotchas you already know about.
+    validations:
+      required: false
