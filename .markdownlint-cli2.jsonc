@@ -1,0 +1,13 @@
+{
+  // markdownlint config for macadmin-toolbox.
+  // We write soft-wrapped prose (one sentence per line where it reads well),
+  // so line-length is not enforced. Everything else stays on.
+  "config": {
+    "default": true,
+    "MD013": false,
+    "MD033": false,
+    "MD041": false
+  },
+  "globs": ["**/*.md"],
+  "ignores": ["**/node_modules/**"]
+}
