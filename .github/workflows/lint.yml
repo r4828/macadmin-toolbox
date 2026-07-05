@@ -9,6 +9,14 @@ permissions:
   contents: read
 
 jobs:
+  license-headers:
+    name: License headers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check MIT attribution headers
+        run: bash tools/check-license-headers.sh
+
   shellcheck:
     name: ShellCheck
     runs-on: ubuntu-latest

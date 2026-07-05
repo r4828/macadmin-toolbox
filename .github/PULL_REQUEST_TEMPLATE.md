@@ -11,6 +11,7 @@
 
 ## Checklist
 
+- [ ] The file has an MIT attribution header (`SPDX-FileCopyrightText` + `SPDX-License-Identifier: MIT`). CI enforces this; run `tools/check-license-headers.sh` to confirm.
 - [ ] The script has a header comment (purpose, context, parameters, tested-on).
 - [ ] No secrets: no API keys, tokens, passwords, or real environment URLs.
 - [ ] Shell scripts pass `shellcheck` with no warnings.

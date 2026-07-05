@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: 2026 Robert Flanagan and macadmin-toolbox contributors -->
+<!-- SPDX-License-Identifier: MIT -->
+
 # Security policy
 
 ## Reporting a vulnerability or a leaked secret

@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: 2026 Robert Flanagan and macadmin-toolbox contributors -->
+<!-- SPDX-License-Identifier: MIT -->
+
 # Contributing to macadmin-toolbox
 
 Thanks for pitching in. This repo grows when people send their fixes and their own tools back to it. Here's how to do that cleanly.
@@ -6,16 +9,19 @@ Thanks for pitching in. This repo grows when people send their fixes and their o
 
 1. Fork the repo and branch off `main`.
 2. Put your script in the folder that fits (`jamf/`, `mdm/`, or `configs/`). Not sure? Put it where it best fits and say so in the PR. We'll sort it out.
-3. Give it a header comment (see below).
-4. Run `shellcheck` on shell scripts. CI runs it too, so doing it locally saves a round trip.
+3. Give it a header comment (see below), including the license lines.
+4. Run `shellcheck` on shell scripts and `tools/check-license-headers.sh` on everything. CI runs both, so doing it locally saves a round trip.
 5. Open the PR against `main` and fill out the template.
 
 ## Script header
 
-Every script starts with a comment block that answers the questions the next admin will have:
+Every script starts with a comment block that answers the questions the next admin will have, plus the two license lines CI checks for:
 
 ```bash
 #!/bin/bash
+# SPDX-FileCopyrightText: 2026 Your Name and macadmin-toolbox contributors
+# SPDX-License-Identifier: MIT
+#
 # Name:        reset-something.sh
 # Purpose:     One or two sentences on what it does.
 # Context:     Where it runs: Jamf policy, login/logout, standalone, LaunchDaemon.
@@ -25,6 +31,34 @@ Every script starts with a comment block that answers the questions the next adm
 ```
 
 Adjust the comment style for the language. Python and zsh scripts want the same information.
+
+## License headers
+
+Every script and document here carries a two-line MIT attribution header, and CI fails any file that's missing it. That's what keeps the repo honestly MIT as it fills up and as code moves between files.
+
+Put these two lines in the header, commented for the file type:
+
+```text
+SPDX-FileCopyrightText: 2026 Your Name and macadmin-toolbox contributors
+SPDX-License-Identifier: MIT
+```
+
+In a shell or Python script, that's two `#` lines under the shebang, as shown above. In a Markdown document, use HTML comments at the very top of the file:
+
+```text
+<!-- SPDX-FileCopyrightText: 2026 Your Name and macadmin-toolbox contributors -->
+<!-- SPDX-License-Identifier: MIT -->
+```
+
+Keep your own name on files you write. When you edit someone else's file, leave their line and add yours if the change is substantial.
+
+Check your work before you push:
+
+```bash
+tools/check-license-headers.sh
+```
+
+A few files are exempt because they carry their own license or aren't distributed content: the `LICENSE` file, `CODE_OF_CONDUCT.md` (the Contributor Covenant, under CC BY 4.0), and the GitHub issue and PR templates. The exemption list lives at the top of `tools/check-license-headers.sh`.
 
 ## No secrets, ever
 
@@ -48,7 +82,7 @@ Use placeholders: `YOUR_JAMF_URL`, `CLIENT_ID`, `example.jamfcloud.com`. Read yo
 ## What gets merged
 
 - The script does what its header says.
-- It has no secrets.
+- It has the MIT attribution header and no secrets.
 - Shell scripts pass `shellcheck`.
 - It won't quietly nuke a machine. Anything destructive (deletes data, wipes, resets) needs a clear header warning and either a confirmation step or a documented reason there isn't one.
 
