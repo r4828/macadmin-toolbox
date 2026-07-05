@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: 2026 Robert Flanagan and macadmin-toolbox contributors -->
+<!-- SPDX-License-Identifier: MIT -->
+
 # mdm/
 
 Vendor-neutral scripts. If it runs on macOS regardless of which MDM pushed it, it goes here.

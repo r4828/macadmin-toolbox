@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: 2026 Robert Flanagan and macadmin-toolbox contributors -->
+<!-- SPDX-License-Identifier: MIT -->
+
 # macadmin-toolbox
 
 Scripts, configuration profiles, and other odds and ends I've built for managing Macs with Jamf Pro and other MDMs. They're here so other Mac admins can use them, break them, fix them, and send the fixes back.

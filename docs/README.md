@@ -1,3 +1,6 @@
+<!-- SPDX-FileCopyrightText: 2026 Robert Flanagan and macadmin-toolbox contributors -->
+<!-- SPDX-License-Identifier: MIT -->
+
 # docs/
 
 Notes and standards that don't belong to a single script.
