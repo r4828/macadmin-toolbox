@@ -27,7 +27,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Run ShellCheck
-        uses: ludeeus/action-shellcheck@master
+        uses: ludeeus/action-shellcheck@2.0.0
         with:
           severity: warning
           # ShellCheck has no zsh mode (SC1071); zsh scripts are covered by

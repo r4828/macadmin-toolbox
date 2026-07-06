@@ -501,7 +501,7 @@ scan_browser_ext() {
 # SECTION E: MCP configuration on stable user and system paths.
 scan_mcp() {
     local h cdc vsc f
-    local -a cdext plugmcp kirows
+    local -a cdext plugmcp
     for h in $user_homes; do
         # Claude Desktop config.
         cdc="$h/Library/Application Support/Claude/claude_desktop_config.json"
@@ -625,7 +625,7 @@ else
             if (( ${#fb_kept} + ${#fb_line} + 1 <= EA_MAX_CHARS )); then
                 fb_kept+="${fb_line}"$'\n'
             else
-                (( fb_omitted++ ))
+                (( ++fb_omitted ))
             fi
         done
         findings_body="${fb_kept}TRUNCATED: ${fb_omitted} finding(s) omitted to bound the EA value size"

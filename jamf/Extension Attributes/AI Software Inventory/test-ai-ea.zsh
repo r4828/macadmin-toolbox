@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/bin/zsh --no-rcs
 # SPDX-FileCopyrightText: 2026 Robert Flanagan and macadmin-toolbox contributors
 # SPDX-License-Identifier: MIT
 #
