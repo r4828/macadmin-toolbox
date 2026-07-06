@@ -466,7 +466,9 @@ scan_browser_ext() {
                 esac
                 [[ -z "$nm" ]] && continue
                 if is_ai_heuristic "$nm"; then
-                    emit "BROWSER-EXT" "$nm" "$browser" "$mf"
+                    # Same field shape as the known path: id = extension ID,
+                    # location = browser.
+                    emit "BROWSER-EXT" "$nm" "$extid" "$browser"
                 fi
             done
         done
