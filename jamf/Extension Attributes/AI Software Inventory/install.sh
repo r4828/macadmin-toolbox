@@ -566,7 +566,7 @@ chrome_ext_known() {
 
 # Bounded manifest-name scan for unknown extensions.
 scan_browser_ext() {
-    local h broot browser mf extid known nm extdir msg
+    local h broot browser mf extid known nm extdir msg mkey resolved
     for h in $user_homes; do
         for broot in \
             "$h/Library/Application Support/Google/Chrome" \
