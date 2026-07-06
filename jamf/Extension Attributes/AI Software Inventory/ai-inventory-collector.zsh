@@ -229,7 +229,6 @@ cli_known() {
         chatgpt)                echo "ChatGPT CLI";;
         interpreter|open-interpreter) echo "Open Interpreter";;
         llamafile|llama-cli|llama-server) echo "llama.cpp";;
-        amp)                    echo "Amp (Sourcegraph)";;
         openhands)              echo "OpenHands";;
         cline)                  echo "Cline";;
         auggie)                 echo "Auggie (Augment)";;
@@ -259,14 +258,16 @@ scan_cli() {
     done
     for d in $bindirs; do
         [[ -d "$d" ]] || continue
-        # No bare "copilot" or "goose" here: AWS Copilot (ECS) and pressly/goose
-        # (database migrations) install binaries with those exact names. GitHub
-        # Copilot CLI is caught by ~/.config/github-copilot and the
-        # @github/copilot npm package; Block's Goose by ~/.config/goose.
+        # No bare "copilot", "goose", or "amp" here: AWS Copilot (ECS),
+        # pressly/goose (database migrations), and Homebrew's amp (a terminal
+        # text editor) install binaries with those exact names. The AI tools
+        # are caught by their specific signals instead: ~/.config/github-copilot
+        # and the @github/copilot npm package, ~/.config/goose, and
+        # ~/.config/amp plus the @sourcegraph/amp npm package.
         for name in claude codex gemini cursor-agent aider ollama llm sgpt shell-gpt \
                     mods aichat tgpt crush opencode kiro kiro-cli cody \
                     chatgpt interpreter open-interpreter llamafile llama-cli llama-server \
-                    amp openhands cline auggie qodo codebuff freebuff ra-aid gptme \
+                    openhands cline auggie qodo codebuff freebuff ra-aid gptme \
                     gpte gpt-engineer plandex pdx butterfish mycoder mentat qchat qterm; do
             if [[ -e "$d/$name" || -L "$d/$name" ]]; then
                 friendly="$(cli_known "$name")"
