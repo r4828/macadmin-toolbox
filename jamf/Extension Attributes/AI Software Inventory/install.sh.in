@@ -14,12 +14,20 @@
 # Tested on:   macOS 15.7.7 Sequoia
 # Author:      Robert Flanagan (@r4828)
 #
-# If $6 changes, update STALE_THRESHOLD in ai-software-inventory-ea.zsh.
+# $6 is recorded in ${STATE_DIR}/interval; the EA reader derives its staleness
+# threshold (2x interval) from that file, falling back to 28800 s if absent.
 
 set -eu
 umask 022
 
 REVERSE_DOMAIN="${5:-io.github.ai-software-inventory}"
+# The label lands in a filesystem path and in plist XML; keep it reverse-DNS.
+case "${REVERSE_DOMAIN}" in
+    *[!A-Za-z0-9.-]*|*..*|.*|*.)
+        echo "install.sh: parameter 5 (REVERSE_DOMAIN) must be a reverse-DNS label (letters, digits, '.', '-'), got '${REVERSE_DOMAIN}'" >&2
+        exit 1
+        ;;
+esac
 PROJECT="ai-software-inventory"
 START_INTERVAL="${6:-14400}"
 
@@ -58,6 +66,9 @@ log() {
 
 do_uninstall() {
     log "Uninstalling ${LABEL} ..."
+    if [ ! -f "${PLIST_DEST}" ]; then
+        log "WARNING: ${PLIST_DEST} not found. If the install used a custom parameter 5 (label prefix), rerun --uninstall with that same value; continuing cleanup of the paths above."
+    fi
     launchctl bootout "system/${LABEL}" 2>/dev/null || true
     rm -f "${PLIST_DEST}"
     rm -rf "${INSTALL_DIR}"
@@ -92,6 +103,11 @@ log "Creating state directory ${STATE_DIR}"
 mkdir -p "${STATE_DIR}"
 chown root:wheel "${STATE_DIR}"
 chmod 0700 "${STATE_DIR}"
+
+log "Recording interval ${START_INTERVAL}s -> ${STATE_DIR}/interval (EA staleness = 2x)"
+printf '%s\n' "${START_INTERVAL}" > "${STATE_DIR}/interval"
+chown root:wheel "${STATE_DIR}/interval"
+chmod 0644 "${STATE_DIR}/interval"
 
 log "Writing LaunchDaemon ${PLIST_DEST} (Label ${LABEL})"
 cat > "${PLIST_DEST}" <<PLIST_EOF

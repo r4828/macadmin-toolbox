@@ -114,7 +114,7 @@ Everything an admin may want to customize is exposed as policy script parameters
 | **7** | Collector log path (validated: absolute) | `/var/log/ai-software-inventory.collector.log` |
 | 8–11 | unused | none |
 
-> **Two cross-contracts to respect.** (1) The EA reader flags `STALE` at 28800 s (2× the default interval); Jamf EAs take **no** script parameters, so if you change parameter 6, edit `STALE_THRESHOLD` in the reader script to ~2× the new interval. (2) An **uninstall policy must pass the same parameter 5** used at install time, or the `bootout` targets the wrong LaunchDaemon label.
+> **Two cross-contracts to respect.** (1) The installer records parameter 6 in `/var/db/ai-software-inventory/interval`, and the EA reader flags `STALE` at 2× that value (falling back to 28800 s if the file is missing), so a custom interval propagates to the staleness check on its own. (2) An **uninstall policy must pass the same parameter 5** used at install time, or the `bootout` targets the wrong LaunchDaemon label; the uninstaller warns when the expected plist is absent.
 
 What it does:
 
@@ -422,7 +422,7 @@ It covers: syntax (`zsh -n`, `sh -n`, `plutil -lint`), the collector's **atomic 
 
 **Does it detect ChatGPT used in a browser tab, or Microsoft 365 Copilot?** No. Browser-session and tenant-side AI are invisible to an endpoint scanner; govern those at the network or tenant layer. See [What it does not detect](#what-it-does-not-detect-by-design).
 
-**Can I change how often it scans?** Yes. Jamf policy script parameter 6 sets the interval (default 4 hours, minimum 10 minutes). If you change it, update `STALE_THRESHOLD` in the reader script to roughly twice the new interval.
+**Can I change how often it scans?** Yes. Jamf policy script parameter 6 sets the interval (default 4 hours, minimum 10 minutes). The installer records the value in `/var/db/ai-software-inventory/interval` and the reader treats 2× that as its staleness threshold, so no reader edit is needed.
 
 ---
 

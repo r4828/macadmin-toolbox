@@ -227,7 +227,6 @@ cli_known() {
         opencode)               echo "OpenCode";;
         kiro|kiro-cli)          echo "Kiro CLI";;
         cody)                   echo "Sourcegraph Cody";;
-        copilot)                echo "GitHub Copilot CLI";;
         chatgpt)                echo "ChatGPT CLI";;
         interpreter|open-interpreter) echo "Open Interpreter";;
         llamafile|llama-cli|llama-server) echo "llama.cpp";;
@@ -261,13 +260,17 @@ scan_cli() {
     done
     for d in $bindirs; do
         [[ -d "$d" ]] || continue
+        # No bare "copilot" here: AWS Copilot (ECS, not AI) also installs as
+        # /usr/local/bin/copilot. GitHub Copilot CLI is caught by its
+        # ~/.config/github-copilot dir and the @github/copilot npm package.
         for name in claude codex gemini cursor-agent aider ollama llm sgpt shell-gpt \
-                    mods aichat tgpt goose crush opencode kiro kiro-cli cody copilot \
+                    mods aichat tgpt goose crush opencode kiro kiro-cli cody \
                     chatgpt interpreter open-interpreter llamafile llama-cli llama-server \
                     amp openhands cline auggie qodo codebuff freebuff ra-aid gptme \
                     gpte gpt-engineer plandex pdx butterfish mycoder mentat qchat qterm; do
             if [[ -e "$d/$name" || -L "$d/$name" ]]; then
-                emit "CLI" "$(cli_known "$name")" "$name" "$d/$name"
+                friendly="$(cli_known "$name")"
+                [[ -n "$friendly" ]] && emit "CLI" "$friendly" "$name" "$d/$name"
             fi
         done
     done

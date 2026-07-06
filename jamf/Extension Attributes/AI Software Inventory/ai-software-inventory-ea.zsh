@@ -21,7 +21,15 @@ CAT=/bin/cat
 : ${AI_INV_STATE_DIR:=/var/db/ai-software-inventory}
 STATE_DIR="$AI_INV_STATE_DIR"
 STATE_FILE="$STATE_DIR/result.txt"
-STALE_THRESHOLD=28800   # 8h = 2x the 4h collector interval (StartInterval 14400)
+STALE_THRESHOLD=28800   # fallback: 8h = 2x the default 4h interval (StartInterval 14400)
+
+# install.sh records the configured interval; stale = 2x that when present.
+if [[ -r "$STATE_DIR/interval" ]]; then
+    interval="$("$CAT" "$STATE_DIR/interval" 2>/dev/null)"
+    if [[ "$interval" == <-> ]] && (( interval >= 600 )); then
+        STALE_THRESHOLD=$(( interval * 2 ))
+    fi
+fi
 
 # Always print one Jamf <result> value.
 if [[ ! -f "$STATE_FILE" ]]; then
