@@ -472,7 +472,19 @@ scan_browser_ext() {
                         # _locales sits beside manifest.json in the version dir.
                         extdir="$("$DIRNAME" "$mf")"
                         msg="$("$FIND" "$extdir" -maxdepth 3 -path '*_locales/en*/messages.json' 2>/dev/null | "$HEAD" -1)"
-                        [[ -n "$msg" ]] && nm="$("$GREP" -Eo '"message"[[:space:]]*:[[:space:]]*"[^"]*"' "$msg" 2>/dev/null | "$HEAD" -1 | "$SED" -E 's/.*:[[:space:]]*"//; s/"$//')"
+                        if [[ -n "$msg" ]]; then
+                            # Resolve the key the manifest names (Chrome i18n
+                            # keys are case-insensitive); sanitize before it
+                            # lands in an ERE. Fall back to the file's first
+                            # message if the key lookup finds nothing.
+                            mkey="${nm#__MSG_}"; mkey="${mkey%%__*}"; mkey="${mkey//[^A-Za-z0-9_@]/}"
+                            resolved=""
+                            if [[ -n "$mkey" ]]; then
+                                resolved="$("$TR" -d '\n\t' < "$msg" 2>/dev/null | "$GREP" -ioE "\"${mkey}\"[[:space:]]*:[[:space:]]*\\{[^}]*" | "$HEAD" -1 | "$GREP" -iEo '"message"[[:space:]]*:[[:space:]]*"[^"]*"' | "$HEAD" -1 | "$SED" -E 's/.*:[[:space:]]*"//; s/"$//')"
+                            fi
+                            [[ -z "$resolved" ]] && resolved="$("$GREP" -Eo '"message"[[:space:]]*:[[:space:]]*"[^"]*"' "$msg" 2>/dev/null | "$HEAD" -1 | "$SED" -E 's/.*:[[:space:]]*"//; s/"$//')"
+                            [[ -n "$resolved" ]] && nm="$resolved"
+                        fi
                         ;;
                 esac
                 [[ -z "$nm" ]] && continue
