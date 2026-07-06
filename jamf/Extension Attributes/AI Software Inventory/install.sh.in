@@ -1,0 +1,135 @@
+#!/bin/bash
+# SPDX-FileCopyrightText: 2026 Robert Flanagan and macadmin-toolbox contributors
+# SPDX-License-Identifier: MIT
+#
+# Name:        install.sh
+# Purpose:     Self-contained installer for the AI Software Inventory
+#              collector: writes the collector script and its LaunchDaemon,
+#              then loads the daemon. --uninstall removes everything.
+# Context:     Jamf policy (as root) or standalone: sudo ./install.sh [--uninstall]
+# Parameters:  $4 = action: blank/install or --uninstall/uninstall
+#              $5 = reverse-DNS label prefix, default io.github.ai-software-inventory
+#              $6 = collection interval seconds, default 14400, minimum 600
+#              $7 = absolute log path, default /var/log/ai-software-inventory.collector.log
+# Tested on:   macOS 15.7.7 Sequoia
+# Author:      Robert Flanagan (@r4828)
+#
+# If $6 changes, update STALE_THRESHOLD in ai-software-inventory-ea.zsh.
+
+set -eu
+umask 022
+
+REVERSE_DOMAIN="${5:-io.github.ai-software-inventory}"
+PROJECT="ai-software-inventory"
+START_INTERVAL="${6:-14400}"
+
+LABEL="${REVERSE_DOMAIN}.collector"
+INSTALL_DIR="/usr/local/${PROJECT}"
+COLLECTOR_NAME="ai-inventory-collector.zsh"
+COLLECTOR_DEST="${INSTALL_DIR}/${COLLECTOR_NAME}"
+PLIST_DEST="/Library/LaunchDaemons/${LABEL}.plist"
+STATE_DIR="/var/db/${PROJECT}"
+LOG_FILE="${7:-/var/log/${PROJECT}.collector.log}"
+
+# Fail visibly on a bad cadence.
+case "${START_INTERVAL}" in
+    ''|*[!0-9]*)
+        echo "install.sh: parameter 6 (START_INTERVAL) must be an integer number of seconds, got '${START_INTERVAL}'" >&2
+        exit 1
+        ;;
+esac
+if [ "${START_INTERVAL}" -lt 600 ]; then
+    echo "install.sh: parameter 6 (START_INTERVAL) must be >= 600 seconds, got ${START_INTERVAL}" >&2
+    exit 1
+fi
+
+# LaunchDaemon log paths must be absolute.
+case "${LOG_FILE}" in
+    /*) : ;;
+    *)
+        echo "install.sh: parameter 7 (LOG_FILE) must be an absolute path, got '${LOG_FILE}'" >&2
+        exit 1
+        ;;
+esac
+
+log() {
+    echo "[install.sh] $*"
+}
+
+do_uninstall() {
+    log "Uninstalling ${LABEL} ..."
+    launchctl bootout "system/${LABEL}" 2>/dev/null || true
+    rm -f "${PLIST_DEST}"
+    rm -rf "${INSTALL_DIR}"
+    rm -rf "${STATE_DIR}"
+    log "Uninstalled. ${LOG_FILE} left in place (rotate/remove manually if desired)."
+}
+
+# Direct runs use $1; Jamf policy scripts start custom parameters at $4.
+if [ "${1:-}" = "--uninstall" ] || [ "${4:-}" = "--uninstall" ] || [ "${4:-}" = "uninstall" ]; then
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "install.sh --uninstall must run as root." >&2
+        exit 1
+    fi
+    do_uninstall
+    exit 0
+fi
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "install.sh must run as root (e.g. via a Jamf policy running as root, or sudo)." >&2
+    exit 1
+fi
+
+log "Installing collector -> ${COLLECTOR_DEST}"
+mkdir -p "${INSTALL_DIR}"
+chown root:wheel "${INSTALL_DIR}"
+chmod 0755 "${INSTALL_DIR}"
+#@@EMBEDDED_COLLECTOR@@
+chown root:wheel "${COLLECTOR_DEST}"
+chmod 0755 "${COLLECTOR_DEST}"
+
+log "Creating state directory ${STATE_DIR}"
+mkdir -p "${STATE_DIR}"
+chown root:wheel "${STATE_DIR}"
+chmod 0700 "${STATE_DIR}"
+
+log "Writing LaunchDaemon ${PLIST_DEST} (Label ${LABEL})"
+cat > "${PLIST_DEST}" <<PLIST_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>${LABEL}</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/zsh</string>
+		<string>--no-rcs</string>
+		<string>${COLLECTOR_DEST}</string>
+	</array>
+	<key>StartInterval</key>
+	<integer>${START_INTERVAL}</integer>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>StandardOutPath</key>
+	<string>${LOG_FILE}</string>
+	<key>StandardErrorPath</key>
+	<string>${LOG_FILE}</string>
+</dict>
+</plist>
+PLIST_EOF
+chown root:wheel "${PLIST_DEST}"
+chmod 0644 "${PLIST_DEST}"
+
+log "(Re)loading via modern launchctl subcommands (bootout/enable/bootstrap/kickstart)"
+launchctl bootout "system/${LABEL}" 2>/dev/null || true
+# Clear a persistent disabled override before bootstrap.
+launchctl enable "system/${LABEL}"
+launchctl bootstrap system "${PLIST_DEST}"
+launchctl kickstart -k "system/${LABEL}"
+
+log "Done. Verify with: launchctl print system/${LABEL}"
+log "First state file should appear within a few seconds at ${STATE_DIR}/result.txt"
+exit 0

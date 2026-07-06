@@ -26,9 +26,28 @@ jobs:
         uses: ludeeus/action-shellcheck@master
         with:
           severity: warning
+          # ShellCheck has no zsh mode (SC1071); zsh scripts are covered by
+          # the zsh-syntax job below.
+          ignore_names: "*.zsh"
         env:
           # Skip sourced files ShellCheck cannot follow.
           SHELLCHECK_OPTS: -e SC1091
+
+  zsh-syntax:
+    name: zsh syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install zsh
+        run: sudo apt-get update && sudo apt-get install -y zsh
+      - name: Syntax-check zsh scripts
+        run: |
+          status=0
+          while IFS= read -r -d '' f; do
+            echo "zsh -n $f"
+            zsh -n "$f" || status=1
+          done < <(find . -name '*.zsh' -type f -not -path './.git/*' -print0)
+          exit "$status"
 
   markdownlint:
     name: Markdown
