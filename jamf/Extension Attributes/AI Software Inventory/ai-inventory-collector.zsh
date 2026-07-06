@@ -222,7 +222,6 @@ cli_known() {
         mods)                   echo "mods (Charm)";;
         aichat)                 echo "aichat";;
         tgpt)                   echo "tgpt";;
-        goose)                  echo "Goose (Block)";;
         crush)                  echo "Crush (Charm)";;
         opencode)               echo "OpenCode";;
         kiro|kiro-cli)          echo "Kiro CLI";;
@@ -260,11 +259,12 @@ scan_cli() {
     done
     for d in $bindirs; do
         [[ -d "$d" ]] || continue
-        # No bare "copilot" here: AWS Copilot (ECS, not AI) also installs as
-        # /usr/local/bin/copilot. GitHub Copilot CLI is caught by its
-        # ~/.config/github-copilot dir and the @github/copilot npm package.
+        # No bare "copilot" or "goose" here: AWS Copilot (ECS) and pressly/goose
+        # (database migrations) install binaries with those exact names. GitHub
+        # Copilot CLI is caught by ~/.config/github-copilot and the
+        # @github/copilot npm package; Block's Goose by ~/.config/goose.
         for name in claude codex gemini cursor-agent aider ollama llm sgpt shell-gpt \
-                    mods aichat tgpt goose crush opencode kiro kiro-cli cody \
+                    mods aichat tgpt crush opencode kiro kiro-cli cody \
                     chatgpt interpreter open-interpreter llamafile llama-cli llama-server \
                     amp openhands cline auggie qodo codebuff freebuff ra-aid gptme \
                     gpte gpt-engineer plandex pdx butterfish mycoder mentat qchat qterm; do
@@ -291,6 +291,7 @@ scan_cli() {
         ".grok|Grok CLI (config present)"
         ".mycoder|MyCoder (config present)"
         ".config/amp|Amp (config present)"
+        ".config/goose|Goose (Block) (config present)"
         ".config/fabric|Fabric (config present)"
     )
     for h in $user_homes; do
