@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SPDX-FileCopyrightText: 2026 Robert Flanagan and macadmin-toolbox contributors
+  SPDX-License-Identifier: MIT
+
+  OPTIONAL PPPC (Privacy Preferences Policy Control) profile.
+
+  Grants Full Disk Access (TCC service SystemPolicyAllFiles) to /bin/zsh so the
+  AI Software Inventory collector LaunchDaemon can read every user's data without
+  hitting TCC "operation not permitted" denials.
+
+  YOU PROBABLY DO NOT NEED THIS. The collector only reads paths that are NOT
+  individually TCC-protected (third-party ~/Library/Application Support/<app>
+  dirs, ~/.config, ~/.vscode, /Applications). Deploy the collector first, watch
+  /var/log/ai-software-inventory.collector.log for permission errors, and apply
+  this ONLY if you see TCC denials or you extend the scan to protected paths
+  (~/Desktop, ~/Documents, ~/Downloads, ~/Library/Safari, ~/Library/Mail, etc.).
+
+  CAVEAT: this grants Full Disk Access to /bin/zsh *broadly* — every zsh process
+  gains FDA, not just this collector. That is an inherent limitation of PPPC for
+  script-based daemons (the TCC identity is the interpreter, not the script).
+  Accept that tradeoff knowingly, or sign the collector as a standalone binary
+  and scope the grant to it instead.
+
+  BEFORE DEPLOYING: change PayloadOrganization and the PayloadIdentifier prefix
+  (io.github.ai-software-inventory) to your own reverse-DNS, and regenerate the
+  two PayloadUUIDs with `uuidgen`. Deliver via Jamf Pro: Configuration Profiles
+  -> upload this .mobileconfig (it does not need to be signed for MDM delivery).
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>PayloadType</key>
+	<string>Configuration</string>
+	<key>PayloadVersion</key>
+	<integer>1</integer>
+	<key>PayloadScope</key>
+	<string>System</string>
+	<key>PayloadUUID</key>
+	<string>9CBB8F6A-4BA3-47BF-B10B-67ADDF6F98DC</string>
+	<key>PayloadIdentifier</key>
+	<string>io.github.ai-software-inventory.pppc-fda</string>
+	<key>PayloadDisplayName</key>
+	<string>AI Software Inventory — Full Disk Access (collector)</string>
+	<key>PayloadDescription</key>
+	<string>OPTIONAL. Grants Full Disk Access to /bin/zsh so the AI Software Inventory collector LaunchDaemon can read all users' data without TCC denials. See the project README before deploying.</string>
+	<key>PayloadOrganization</key>
+	<string>CHANGE-ME</string>
+	<key>PayloadContent</key>
+	<array>
+		<dict>
+			<key>PayloadType</key>
+			<string>com.apple.TCC.configuration-profile-policy</string>
+			<key>PayloadVersion</key>
+			<integer>1</integer>
+			<key>PayloadUUID</key>
+			<string>545BDF27-B303-413F-B9B4-9D4269FA22C4</string>
+			<key>PayloadIdentifier</key>
+			<string>io.github.ai-software-inventory.pppc-fda.tcc</string>
+			<key>PayloadDisplayName</key>
+			<string>Privacy Preferences Policy Control — Full Disk Access</string>
+			<key>Services</key>
+			<dict>
+				<key>SystemPolicyAllFiles</key>
+				<array>
+					<dict>
+						<key>Identifier</key>
+						<string>/bin/zsh</string>
+						<key>IdentifierType</key>
+						<string>path</string>
+						<key>CodeRequirement</key>
+						<string>identifier "com.apple.zsh" and anchor apple</string>
+						<key>Authorization</key>
+						<string>Allow</string>
+					</dict>
+				</array>
+			</dict>
+		</dict>
+	</array>
+</dict>
+</plist>
