@@ -37,6 +37,7 @@ COLLECTOR_NAME="ai-inventory-collector.zsh"
 COLLECTOR_DEST="${INSTALL_DIR}/${COLLECTOR_NAME}"
 PLIST_DEST="/Library/LaunchDaemons/${LABEL}.plist"
 STATE_DIR="/var/db/${PROJECT}"
+LABEL_MARKER="${STATE_DIR}/label"
 LOG_FILE="${7:-/var/log/${PROJECT}.collector.log}"
 
 # Fail visibly on a bad cadence.
@@ -59,12 +60,35 @@ case "${LOG_FILE}" in
         exit 1
         ;;
 esac
+# The path is written verbatim into plist XML; reject metacharacters rather
+# than generate a plist launchctl cannot parse.
+case "${LOG_FILE}" in
+    *[\&\<\>\"\']*)
+        echo "install.sh: parameter 7 (LOG_FILE) must not contain & < > \" or ', got '${LOG_FILE}'" >&2
+        exit 1
+        ;;
+esac
 
 log() {
     echo "[install.sh] $*"
 }
 
 do_uninstall() {
+    # If the plist is not where the current $5 says, prefer the label the
+    # installer recorded at install time.
+    if [ ! -f "${PLIST_DEST}" ] && [ -f "${LABEL_MARKER}" ]; then
+        recorded_label="$(cat "${LABEL_MARKER}" 2>/dev/null)"
+        case "${recorded_label}" in
+            ''|*[!A-Za-z0-9.-]*) : ;;
+            *)
+                if [ -f "/Library/LaunchDaemons/${recorded_label}.plist" ]; then
+                    log "Parameter 5 resolves to ${LABEL}, but the recorded install label is ${recorded_label}; uninstalling that instead."
+                    LABEL="${recorded_label}"
+                    PLIST_DEST="/Library/LaunchDaemons/${LABEL}.plist"
+                fi
+                ;;
+        esac
+    fi
     log "Uninstalling ${LABEL} ..."
     if [ ! -f "${PLIST_DEST}" ]; then
         log "WARNING: ${PLIST_DEST} not found. If the install used a custom parameter 5 (label prefix), rerun --uninstall with that same value; continuing cleanup of the paths above."
@@ -108,6 +132,23 @@ log "Recording interval ${START_INTERVAL}s -> ${STATE_DIR}/interval (EA stalenes
 printf '%s\n' "${START_INTERVAL}" > "${STATE_DIR}/interval"
 chown root:wheel "${STATE_DIR}/interval"
 chmod 0644 "${STATE_DIR}/interval"
+
+# A rebrand (different $5 than the last install) must not leave the old
+# daemon running against the same state file.
+if [ -f "${LABEL_MARKER}" ]; then
+    old_label="$(cat "${LABEL_MARKER}" 2>/dev/null)"
+    case "${old_label}" in
+        ''|"${LABEL}"|*[!A-Za-z0-9.-]*) : ;;
+        *)
+            log "Previous install used label ${old_label}; removing it before installing ${LABEL}"
+            launchctl bootout "system/${old_label}" 2>/dev/null || true
+            rm -f "/Library/LaunchDaemons/${old_label}.plist"
+            ;;
+    esac
+fi
+printf '%s\n' "${LABEL}" > "${LABEL_MARKER}"
+chown root:wheel "${LABEL_MARKER}"
+chmod 0644 "${LABEL_MARKER}"
 
 log "Writing LaunchDaemon ${PLIST_DEST} (Label ${LABEL})"
 cat > "${PLIST_DEST}" <<PLIST_EOF

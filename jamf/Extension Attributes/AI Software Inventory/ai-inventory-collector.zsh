@@ -295,10 +295,19 @@ scan_cli() {
         ".config/fabric|Fabric (config present)"
     )
     for h in $user_homes; do
-        { [[ -e "$h/.claude" || -e "$h/.claude.json" ]]; } && emit "CLI" "Claude Code (config present)" "~/.claude" "$h/.claude"
+        # Emit only paths that exist so the EA never cites a phantom location.
+        if [[ -e "$h/.claude" ]]; then
+            emit "CLI" "Claude Code (config present)" "~/.claude" "$h/.claude"
+        elif [[ -e "$h/.claude.json" ]]; then
+            emit "CLI" "Claude Code (config present)" "~/.claude.json" "$h/.claude.json"
+        fi
         aiderhits=($h/.aider*(N))
-        { [[ -d "$h/.aider" ]] || (( ${#aiderhits} )); } && emit "CLI" "Aider (config present)" "~/.aider" "$h/.aider*"
-        { [[ -d "$h/.aws/amazonq" || -d "$h/.aws/q" ]]; } && emit "CLI" "Amazon Q Developer CLI (config present)" "~/.aws/amazonq" "$h/.aws/amazonq"
+        (( ${#aiderhits} )) && emit "CLI" "Aider (config present)" "~/.aider" "${aiderhits[1]}"
+        if [[ -d "$h/.aws/amazonq" ]]; then
+            emit "CLI" "Amazon Q Developer CLI (config present)" "~/.aws/amazonq" "$h/.aws/amazonq"
+        elif [[ -d "$h/.aws/q" ]]; then
+            emit "CLI" "Amazon Q Developer CLI (config present)" "~/.aws/q" "$h/.aws/q"
+        fi
         for entry in $simple_cli_configs; do
             suffix="${entry%%|*}"
             friendly="${entry#*|}"
@@ -459,7 +468,8 @@ scan_browser_ext() {
                 nm="$("$GREP" -Eo '"name"[[:space:]]*:[[:space:]]*"[^"]*"' "$mf" 2>/dev/null | "$HEAD" -1 | "$SED" -E 's/.*:[[:space:]]*"//; s/"$//')"
                 case "$nm" in
                     __MSG_*)
-                        extdir="$("$DIRNAME" "$("$DIRNAME" "$mf")")"
+                        # _locales sits beside manifest.json in the version dir.
+                        extdir="$("$DIRNAME" "$mf")"
                         msg="$("$FIND" "$extdir" -maxdepth 3 -path '*_locales/en*/messages.json' 2>/dev/null | "$HEAD" -1)"
                         [[ -n "$msg" ]] && nm="$("$GREP" -Eo '"message"[[:space:]]*:[[:space:]]*"[^"]*"' "$msg" 2>/dev/null | "$HEAD" -1 | "$SED" -E 's/.*:[[:space:]]*"//; s/"$//')"
                         ;;
@@ -593,6 +603,20 @@ else
     cats="${cats#, }"
 
     findings_body="$(printf '%s\n' "$sorted" | "$SED" 's/\t/ | /g')"
+    # Bound the EA value; Jamf stores it in the computer record at every recon.
+    EA_MAX_CHARS=30000
+    if (( ${#findings_body} > EA_MAX_CHARS )); then
+        fb_kept=""
+        fb_omitted=0
+        for fb_line in "${(@f)findings_body}"; do
+            if (( ${#fb_kept} + ${#fb_line} + 1 <= EA_MAX_CHARS )); then
+                fb_kept+="${fb_line}"$'\n'
+            else
+                (( fb_omitted++ ))
+            fi
+        done
+        findings_body="${fb_kept}TRUNCATED: ${fb_omitted} finding(s) omitted to bound the EA value size"
+    fi
     body="$(printf 'SUMMARY: %s finding(s); categories: %s\n%s' "$count" "$cats" "$findings_body")"
 fi
 

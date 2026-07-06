@@ -14,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Check MIT attribution headers
         run: bash tools/check-license-headers.sh
 
@@ -22,6 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Run ShellCheck
         uses: ludeeus/action-shellcheck@master
         with:
@@ -38,6 +42,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Install zsh
         run: sudo apt-get update && sudo apt-get install -y zsh
       - name: Syntax-check zsh scripts
@@ -54,6 +60,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Lint Markdown
         uses: DavidAnson/markdownlint-cli2-action@v16
         with:
