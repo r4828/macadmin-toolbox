@@ -18,3 +18,5 @@ Strip anything that identifies your environment: organization name, server URLs,
 A `.mobileconfig` is XML. Open it in a text editor and read it before committing. A signed profile is opaque, so commit the unsigned source.
 
 Say what the profile does and which macOS versions honor the keys. Payload behavior shifts between releases; a key that works on macOS 15 may be ignored on macOS 13.
+
+<img src="https://analytics.mdm.tools/p/MmNgSwMLG" alt="" width="1" height="1">

@@ -435,3 +435,5 @@ AI tooling changes weekly, and the detection tables are built to absorb that: [M
 ## License
 
 This project is released under the [MIT License](./LICENSE). Every script carries an `SPDX-License-Identifier: MIT` header; the full license text lives in [`LICENSE`](./LICENSE). Copyright (c) 2026 Robert Flanagan.
+
+<img src="https://analytics.mdm.tools/p/8LiefCBpf" alt="" width="1" height="1">

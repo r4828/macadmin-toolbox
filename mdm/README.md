@@ -17,3 +17,5 @@ Jamf, Intune, Mosyle, Kandji, Addigy, or a script you run by hand in Terminal: t
 ## What doesn't
 
 Anything that reads Jamf policy parameters or calls a vendor's API belongs next to that vendor. Today that means `jamf/`. If this repo picks up tooling for another platform, that platform gets its own folder.
+
+<img src="https://analytics.mdm.tools/p/Lx01HH68N" alt="" width="1" height="1">

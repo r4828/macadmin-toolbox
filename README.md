@@ -38,3 +38,5 @@ Nothing here should contain a real API secret, token, password, or live server U
 ## License
 
 MIT. Full text in [LICENSE](LICENSE).
+
+<img src="https://analytics.mdm.tools/p/9st4Eky19" alt="" width="1" height="1">
