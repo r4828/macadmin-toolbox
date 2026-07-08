@@ -18,3 +18,5 @@ API scripts should use the API client credentials flow (a client ID and secret),
 ## If it isn't Jamf-specific
 
 If a script would run the same way under Intune, Mosyle, Kandji, or by hand, it belongs in `mdm/` instead, where admins on other platforms will find it.
+
+<img src="https://analytics.mdm.tools/p/5fIijOK3C" alt="" width="1" height="1">
