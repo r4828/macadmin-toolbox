@@ -1,0 +1,279 @@
+#!/bin/bash
+# SPDX-FileCopyrightText: 2026 Robert Flanagan and macadmin-toolbox contributors
+# SPDX-License-Identifier: MIT
+#
+# Name:        install.sh
+# Purpose:     Self-contained installer for the Intel App Auditor collector:
+#              writes the collector script and its LaunchDaemon, then loads the
+#              daemon. --uninstall removes everything.
+# Context:     Jamf policy (as root) or standalone: sudo ./install.sh [--uninstall]
+# Parameters:  $4  = action: blank/install or --uninstall/uninstall
+#              $5  = reverse-DNS label prefix, default io.github.intel-app-auditor
+#              $6  = collection interval seconds, default 604800 (1 week), minimum 600
+#              $7  = absolute log path, default /var/log/intel-app-auditor.collector.log
+#              $8  = SCAN_USER_APPS: 0 or 1 (scan the console user's ~/Applications), default 0
+#              $9  = SP_TIMEOUT: system_profiler timeout seconds 1..3600, default 120
+#              $10 = EXTRA_ROOT: one extra absolute application dir to audit, default none
+# Tested on:   macOS 15.4.1 (live, 24E263, arm64) + macOS 15 Sequoia (Tart VM)
+# Author:      Robert Flanagan (@r4828)
+#
+# $6 is recorded in ${STATE_DIR}/interval; the EA reader derives its staleness
+# threshold (2x interval) from that file, falling back to 28800 s if absent.
+# $8/$9/$10 tune the collector scan and are delivered to it via the LaunchDaemon
+# plist EnvironmentVariables (the collector reads MODE / SCAN_USER_APPS /
+# SP_TIMEOUT / EXTRA_ROOT / INTEL_STATE_DIR from the environment when it has no
+# Jamf positional parameters).
+
+set -eu
+umask 022
+
+# This installer runs as ROOT (Jamf policy or sudo) and calls many bare commands
+# (id, mkdir, chown, chmod, cat, launchctl, mktemp, mv, logger, ...). Pin a
+# trusted system PATH so none of them can be shadowed by a user-writable dir the
+# caller happened to leave ahead of the system dirs (publication finding 3).
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+
+REVERSE_DOMAIN="${5:-io.github.intel-app-auditor}"
+# The label lands in a filesystem path and in plist XML; keep it reverse-DNS.
+case "${REVERSE_DOMAIN}" in
+    *[!A-Za-z0-9.-]*|*..*|.*|*.)
+        echo "install.sh: parameter 5 (REVERSE_DOMAIN) must be a reverse-DNS label (letters, digits, '.', '-'), got '${REVERSE_DOMAIN}'" >&2
+        exit 1
+        ;;
+esac
+PROJECT="intel-app-auditor"
+START_INTERVAL="${6:-604800}"
+
+LABEL="${REVERSE_DOMAIN}.collector"
+INSTALL_DIR="/usr/local/${PROJECT}"
+COLLECTOR_NAME="intel-app-auditor.zsh"
+COLLECTOR_DEST="${INSTALL_DIR}/${COLLECTOR_NAME}"
+PLIST_DEST="/Library/LaunchDaemons/${LABEL}.plist"
+STATE_DIR="/var/db/${PROJECT}"
+LABEL_MARKER="${STATE_DIR}/label"
+LOG_FILE="${7:-/var/log/${PROJECT}.collector.log}"
+
+# Collector scan tuning (passed to the daemon via plist EnvironmentVariables).
+SCAN_USER_APPS="${8:-0}"
+SP_TIMEOUT="${9:-120}"
+EXTRA_ROOT="${10:-}"
+
+# Fail visibly on a bad cadence.
+case "${START_INTERVAL}" in
+    ''|*[!0-9]*)
+        echo "install.sh: parameter 6 (START_INTERVAL) must be an integer number of seconds, got '${START_INTERVAL}'" >&2
+        exit 1
+        ;;
+esac
+if [ "${START_INTERVAL}" -lt 600 ]; then
+    echo "install.sh: parameter 6 (START_INTERVAL) must be >= 600 seconds, got ${START_INTERVAL}" >&2
+    exit 1
+fi
+
+# LaunchDaemon log paths must be absolute.
+case "${LOG_FILE}" in
+    /*) : ;;
+    *)
+        echo "install.sh: parameter 7 (LOG_FILE) must be an absolute path, got '${LOG_FILE}'" >&2
+        exit 1
+        ;;
+esac
+# The path is written verbatim into plist XML; reject metacharacters rather
+# than generate a plist launchctl cannot parse.
+case "${LOG_FILE}" in
+    *[\&\<\>\"\']*)
+        echo "install.sh: parameter 7 (LOG_FILE) must not contain & < > \" or ', got '${LOG_FILE}'" >&2
+        exit 1
+        ;;
+esac
+
+# SCAN_USER_APPS is a strict boolean.
+case "${SCAN_USER_APPS}" in
+    0|1) : ;;
+    *)
+        echo "install.sh: parameter 8 (SCAN_USER_APPS) must be 0 or 1, got '${SCAN_USER_APPS}'" >&2
+        exit 1
+        ;;
+esac
+
+# SP_TIMEOUT is an integer 1..3600.
+case "${SP_TIMEOUT}" in
+    ''|*[!0-9]*)
+        echo "install.sh: parameter 9 (SP_TIMEOUT) must be an integer number of seconds, got '${SP_TIMEOUT}'" >&2
+        exit 1
+        ;;
+esac
+if [ "${SP_TIMEOUT}" -lt 1 ] || [ "${SP_TIMEOUT}" -gt 3600 ]; then
+    echo "install.sh: parameter 9 (SP_TIMEOUT) must be between 1 and 3600 seconds, got ${SP_TIMEOUT}" >&2
+    exit 1
+fi
+
+# EXTRA_ROOT, when set, must be an absolute path free of plist/EA metacharacters.
+# The auditor itself also re-rejects EA-delimiter chars, but reject here too so a
+# bad value never reaches the plist XML.
+if [ -n "${EXTRA_ROOT}" ]; then
+    case "${EXTRA_ROOT}" in
+        /*) : ;;
+        *)
+            echo "install.sh: parameter 10 (EXTRA_ROOT) must be an absolute path, got '${EXTRA_ROOT}'" >&2
+            exit 1
+            ;;
+    esac
+    case "${EXTRA_ROOT}" in
+        *[\&\<\>\"\'\;]*)
+            echo "install.sh: parameter 10 (EXTRA_ROOT) must not contain & < > \" ' or ;, got '${EXTRA_ROOT}'" >&2
+            exit 1
+            ;;
+    esac
+fi
+
+log() {
+    echo "[install.sh] $*"
+}
+
+do_uninstall() {
+    # If the plist is not where the current $5 says, prefer the label the
+    # installer recorded at install time.
+    if [ ! -f "${PLIST_DEST}" ] && [ -f "${LABEL_MARKER}" ]; then
+        recorded_label="$(cat "${LABEL_MARKER}" 2>/dev/null)"
+        case "${recorded_label}" in
+            ''|*[!A-Za-z0-9.-]*) : ;;
+            *)
+                if [ -f "/Library/LaunchDaemons/${recorded_label}.plist" ]; then
+                    log "Parameter 5 resolves to ${LABEL}, but the recorded install label is ${recorded_label}; uninstalling that instead."
+                    LABEL="${recorded_label}"
+                    PLIST_DEST="/Library/LaunchDaemons/${LABEL}.plist"
+                fi
+                ;;
+        esac
+    fi
+    log "Uninstalling ${LABEL} ..."
+    if [ ! -f "${PLIST_DEST}" ]; then
+        log "WARNING: ${PLIST_DEST} not found. If the install used a custom parameter 5 (label prefix), rerun --uninstall with that same value; continuing cleanup of the paths above."
+    fi
+    launchctl bootout "system/${LABEL}" 2>/dev/null || true
+    rm -f "${PLIST_DEST}"
+    rm -rf "${INSTALL_DIR}"
+    rm -rf "${STATE_DIR}"
+    log "Uninstalled. ${LOG_FILE} left in place (rotate/remove manually if desired)."
+}
+
+# Direct runs use $1; Jamf policy scripts start custom parameters at $4.
+if [ "${1:-}" = "--uninstall" ] || [ "${4:-}" = "--uninstall" ] || [ "${4:-}" = "uninstall" ]; then
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "install.sh --uninstall must run as root." >&2
+        exit 1
+    fi
+    do_uninstall
+    exit 0
+fi
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "install.sh must run as root (e.g. via a Jamf policy running as root, or sudo)." >&2
+    exit 1
+fi
+
+log "Installing collector -> ${COLLECTOR_DEST}"
+mkdir -p "${INSTALL_DIR}"
+chown root:wheel "${INSTALL_DIR}"
+chmod 0755 "${INSTALL_DIR}"
+#@@EMBEDDED_COLLECTOR@@
+chown root:wheel "${COLLECTOR_DEST}"
+chmod 0755 "${COLLECTOR_DEST}"
+
+log "Creating state directory ${STATE_DIR}"
+mkdir -p "${STATE_DIR}"
+chown root:wheel "${STATE_DIR}"
+chmod 0700 "${STATE_DIR}"
+
+log "Recording interval ${START_INTERVAL}s -> ${STATE_DIR}/interval (EA staleness = 2x)"
+printf '%s\n' "${START_INTERVAL}" > "${STATE_DIR}/interval"
+chown root:wheel "${STATE_DIR}/interval"
+chmod 0644 "${STATE_DIR}/interval"
+
+# A rebrand (different $5 than the last install) must not leave the old
+# daemon running against the same state file.
+if [ -f "${LABEL_MARKER}" ]; then
+    old_label="$(cat "${LABEL_MARKER}" 2>/dev/null)"
+    case "${old_label}" in
+        ''|"${LABEL}"|*[!A-Za-z0-9.-]*) : ;;
+        *)
+            log "Previous install used label ${old_label}; removing it before installing ${LABEL}"
+            launchctl bootout "system/${old_label}" 2>/dev/null || true
+            rm -f "/Library/LaunchDaemons/${old_label}.plist"
+            ;;
+    esac
+fi
+printf '%s\n' "${LABEL}" > "${LABEL_MARKER}"
+chown root:wheel "${LABEL_MARKER}"
+chmod 0644 "${LABEL_MARKER}"
+
+# Only advertise the optional EXTRA_ROOT env var in the plist when it is set, so
+# the collector never sees an empty EXTRA_ROOT it would have to special-case.
+EXTRA_ROOT_XML=""
+if [ -n "${EXTRA_ROOT}" ]; then
+    EXTRA_ROOT_XML="		<key>EXTRA_ROOT</key>
+		<string>${EXTRA_ROOT}</string>
+"
+fi
+
+log "Writing LaunchDaemon ${PLIST_DEST} (Label ${LABEL})"
+cat > "${PLIST_DEST}" <<PLIST_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>${LABEL}</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/zsh</string>
+		<string>--no-rcs</string>
+		<string>${COLLECTOR_DEST}</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>MODE</key>
+		<string>collector</string>
+		<key>INTEL_STATE_DIR</key>
+		<string>${STATE_DIR}</string>
+		<key>SCAN_USER_APPS</key>
+		<string>${SCAN_USER_APPS}</string>
+		<key>SP_TIMEOUT</key>
+		<string>${SP_TIMEOUT}</string>
+${EXTRA_ROOT_XML}	</dict>
+	<key>StartInterval</key>
+	<integer>${START_INTERVAL}</integer>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>StandardOutPath</key>
+	<string>${LOG_FILE}</string>
+	<key>StandardErrorPath</key>
+	<string>${LOG_FILE}</string>
+</dict>
+</plist>
+PLIST_EOF
+chown root:wheel "${PLIST_DEST}"
+chmod 0644 "${PLIST_DEST}"
+
+# Reject a plist we cannot parse before we try to load it.
+if command -v plutil >/dev/null 2>&1; then
+    if ! plutil -lint "${PLIST_DEST}" >/dev/null 2>&1; then
+        echo "install.sh: generated plist failed plutil -lint: ${PLIST_DEST}" >&2
+        exit 1
+    fi
+fi
+
+log "(Re)loading via modern launchctl subcommands (bootout/enable/bootstrap/kickstart)"
+launchctl bootout "system/${LABEL}" 2>/dev/null || true
+# Clear a persistent disabled override before bootstrap.
+launchctl enable "system/${LABEL}"
+launchctl bootstrap system "${PLIST_DEST}"
+launchctl kickstart -k "system/${LABEL}"
+
+log "Done. Verify with: launchctl print system/${LABEL}"
+log "First state file should appear within a few seconds at ${STATE_DIR}/result.txt"
+exit 0

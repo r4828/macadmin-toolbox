@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- SPDX-FileCopyrightText: 2026 Robert Flanagan
+     SPDX-License-Identifier: MIT
+     Reference copy only: install.sh generates the deployed plist at install time,
+     including any EXTRA_ROOT set via Jamf parameter 10. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>io.github.intel-app-auditor.collector</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/zsh</string>
+		<string>--no-rcs</string>
+		<string>/usr/local/intel-app-auditor/intel-app-auditor.zsh</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>MODE</key>
+		<string>collector</string>
+		<key>INTEL_STATE_DIR</key>
+		<string>/var/db/intel-app-auditor</string>
+		<key>SCAN_USER_APPS</key>
+		<string>0</string>
+		<key>SP_TIMEOUT</key>
+		<string>120</string>
+	</dict>
+	<key>StartInterval</key>
+	<integer>604800</integer>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>StandardOutPath</key>
+	<string>/var/log/intel-app-auditor.collector.log</string>
+	<key>StandardErrorPath</key>
+	<string>/var/log/intel-app-auditor.collector.log</string>
+</dict>
+</plist>
