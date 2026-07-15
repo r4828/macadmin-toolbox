@@ -259,7 +259,27 @@ Both scripts are written in **zsh** (`#!/bin/zsh --no-rcs`). zsh has been the ma
 
 ## Verification snapshot
 
-A single dated run on one Mac (macOS 15.4.1, arm64, Spotlight disabled). One machine, one moment, not a fleet figure:
+### Cross-OS test matrix
+
+The collector engine, the `system_profiler` / disk reconciler, the reader/EA, and the installer were exercised on real throwaway [Tart](https://tart.run/) VMs cloned from the official cirruslabs base images for macOS 14 (Sonoma), 15 (Sequoia), and 26 (Tahoe), driven from a Mac mini (M1, macOS 26.5.2). Coverage was **82 unique cases across all three OSes, for 246 case-executions**. 39 of those cases are a purpose-built adversarial battery authored against the tool's own source, with every asserted string checked to a `file:line` before use.
+
+Result: **246 / 246 effective pass, zero tool defects.** The first pass was 237/246; the nine misses broke down as six single-OS infrastructure flakes (each passing on a clean re-run and on the other two OSes) plus one stale assertion in the test suite itself, where the hardened reader now returns `MALFORMED_CACHE` ahead of `STALE` on a counts-only cache (safer than the old test assumed). None was a defect in the shipping tool.
+
+What the matrix confirmed on every OS:
+
+- **No false clean zero.** Timeout, empty output, malformed cache, unknown-arch, and missing-path records all resolve to `Unknown` + `ScanStatus:Partial`, never a reassuring `IntelOnly:0`.
+- **Reconciliation both ways.** An agreeing `system_profiler` / disk pair stays `Complete` (`DetectionSource:SystemProfiler+DirectReconciled`); any divergence on count or exact path-set fails closed to `Partial`, and the disk scan's inventory wins.
+- **Architecture classification.** `i386`-only → `Unknown` (not a Rosetta target); fat `i386`+`x86_64` → `IntelOnly`; `arm64e` → `AppleSilicon`; universal ≠ `IntelOnly`; shebang-script mains → `Other`.
+- **Security.** `<result>`-injection payloads in app names are XML-escaped before caching, so no live tag pair reaches the reader, and a hostile `PATH` cannot hijack the root collector.
+- **Reader integrity.** Honest sentinels (`NOT_COLLECTED` / `STALE` / `MALFORMED_CACHE` / `IntelApps:None`) and rejection of symlinked, group- or world-writable, or non-root-owned state.
+- **Localization.** Classification reads the architecture field, not the localized "Kind: Intel" string, so it holds across fr / de / ja / tr, including the Turkish dotless-ı.
+- **Installer.** Rejects bad reverse-domains, sub-600-second intervals, non-absolute log paths, and out-of-range parameters, and completes the full install → daemon → `0600` cache → uninstall lifecycle.
+
+Honest limits: the guests are always arm64, so the "Intel" apps are genuine cross-compiled `x86_64` (and one fabricated `i386`) Mach-O binaries, and Rosetta presence is probed by file existence rather than by executing an Intel binary. The classification logic is proven; Rosetta runtime execution is not. Two paths (the `EXTRA_ROOT` and installer EA-delimiter rejections for `;` `<` `>` and newline) are covered by the local unit suite rather than the VM matrix, because the harness cannot deliver those characters as unquoted shell tokens. That is a coverage boundary, not a gap.
+
+### A single real result
+
+One dated run on one Mac (macOS 15.4.1, arm64, Spotlight disabled). One machine, one moment, not a fleet figure:
 
 ```text
 IntelOnly:27;Universal:109;AppleSilicon:28;iOS:6;Other:5;Unknown:0;ScanStatus:Complete;DetectionSource:DirectBundleScan;RosettaRuntimePresent:Yes;Arch:arm64;Scope:/Applications,/Applications/Utilities
