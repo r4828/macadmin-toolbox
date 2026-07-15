@@ -1,0 +1,616 @@
+#!/bin/zsh --no-rcs
+# SPDX-FileCopyrightText: 2026 Robert Flanagan and macadmin-toolbox contributors
+# SPDX-License-Identifier: MIT
+# Name:        intel-app-auditor.zsh
+# Purpose:     Detection engine for the Rosetta 2 wind-down: which Macs have
+#              Intel-classified app bundles, and which apps. MODE=collector runs
+#              the scan on a LaunchDaemon timer and caches the reader payload
+#              (counts summary + Intel-only list, no <result> wrapper) atomically
+#              to ${INTEL_STATE_DIR:-/var/db/intel-app-auditor}/result.txt, keeping
+#              the multi-second scan off Jamf's recon clock. MODE=ea scans and
+#              prints one counts <result> line (CLI use, not the recon path).
+# Context:     LaunchDaemon collector (installed by install.sh) or standalone CLI;
+#              runs as root, never uses sudo, never modifies an audited app.
+# Parameters:  $4 MODE (ea|collector, default ea); $5 SCAN_USER_APPS (0|1);
+#              $6 SP_TIMEOUT (secs 1..3600); $7 EXTRA_ROOT (abs dir). Same-named
+#              env vars override; the LaunchDaemon passes them via the plist.
+# Tested on:   macOS 15.4.1 Sequoia (arm64)
+# Author:      Robert Flanagan (@r4828)
+#
+# Classify on the machine field arch_kind, never the localized "Kind: Intel".
+# Unknown/missing arch_kind => Unknown; timeout or bad JSON => Partial, never IntelOnly:0.
+
+emulate -L zsh
+setopt local_options pipe_fail no_glob_subst
+
+# Runs as root: pin a trusted PATH so a caller's PATH can't shadow a command and run code as root.
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+: ${DRY_RUN:=0}
+
+# State dir; must match intel-app-auditor-ea.zsh (the reader). Overridable for tests.
+: ${INTEL_STATE_DIR:=/var/db/intel-app-auditor}
+
+# stdout (jamf captures) + logger; diagnostic only, so not routed through run_cmd.
+logmsg() {
+  print -r -- "$*"
+  (( ${DRY_RUN:-0} )) && return 0
+  command logger -t "intel-app-auditor" -- "$*" 2>/dev/null || true
+}
+
+# The one command adapter: tests inject a CMD_ADAPTER_SPY, DRY_RUN previews intent,
+# else run for real. stdout flows to the caller (needed for system_profiler).
+run_cmd() {
+  if typeset -f CMD_ADAPTER_SPY >/dev/null 2>&1; then
+    CMD_ADAPTER_SPY "$@"
+    return $?
+  fi
+  if (( ${DRY_RUN:-0} )); then
+    logmsg "[dry-run] would exec: $*"
+    return 0
+  fi
+  command "$@"
+}
+
+# Embedded JXA parser, materialized to a temp file on first use. JXA is on every
+# macOS (jq/python are not); NUL-delimited records survive app names with pipes/newlines.
+ensure_jxa_parser() {
+  [[ -n ${JXA_PARSER_FILE:-} && -f ${JXA_PARSER_FILE:-/nonexistent} ]] && return 0
+  JXA_PARSER_FILE=$(mktemp -t iaa.parser.XXXXXX) || return 1
+  cat > "$JXA_PARSER_FILE" <<'JSEOF'
+// argv[0] = input JSON file, argv[1] = status output file.
+// Emits NUL-delimited triples (arch_kind, path, _name) to stdout; writes
+// "Complete" or "Partial" to the status file. Structural failure (bad JSON,
+// no top-level array, empty {} or []) => Partial with no records.
+function run(argv) {
+  ObjC.import('Foundation');
+  var inPath = argv[0], statusPath = argv[1];
+  function writeStatus(s) {
+    $(s).writeToFileAtomicallyEncodingError(statusPath, true, $.NSUTF8StringEncoding, $());
+  }
+  var nsdata = $.NSString.stringWithContentsOfFileEncodingError(inPath, $.NSUTF8StringEncoding, $());
+  if (nsdata.isNil()) { writeStatus('Partial'); return; }
+  var text = ObjC.unwrap(nsdata);
+  var obj;
+  try { obj = JSON.parse(text); } catch (e) { writeStatus('Partial'); return; }
+  if (obj === null || typeof obj !== 'object') { writeStatus('Partial'); return; }
+  var arr = obj['SPApplicationsDataType'];
+  if (!Array.isArray(arr) || arr.length === 0) { writeStatus('Partial'); return; }
+  var md = $.NSMutableData.data;
+  var NUL = $.NSMutableData.dataWithLength(1);
+  function emit(t) {
+    if (typeof t !== 'string') t = '';
+    md.appendData($(t).dataUsingEncoding($.NSUTF8StringEncoding));
+    md.appendData(NUL);
+  }
+  var skipped = false;
+  for (var i = 0; i < arr.length; i++) {
+    var a = arr[i];
+    // A null/non-object element is unclassifiable: escalate to Partial rather
+    // than drop it silently into a clean zero.
+    if (a === null || typeof a !== 'object') { skipped = true; continue; }
+    emit(a['arch_kind']);
+    emit(a['path']);
+    emit(a['_name']);
+  }
+  $.NSFileHandle.fileHandleWithStandardOutput.writeData(md);
+  writeStatus(skipped ? 'Partial' : 'Complete');
+}
+JSEOF
+  [[ -f $JXA_PARSER_FILE ]]
+}
+
+# sp_json: raw system_profiler JSON (timeout-capped); FIXTURE_JSON short-circuits it for tests.
+sp_json() {
+  if [[ -n ${FIXTURE_JSON:-} && -f ${FIXTURE_JSON:-/nonexistent} ]]; then
+    print -r -- "$(<${FIXTURE_JSON})"
+    return 0
+  fi
+  run_cmd /usr/sbin/system_profiler -json -timeout "${SP_TIMEOUT:-120}" SPApplicationsDataType
+}
+
+# parse_records: JSON on stdin -> NUL-delimited records on stdout; sets PARSE_STATUS.
+parse_records() {
+  emulate -L zsh
+  local intmp stmp
+  intmp=$(mktemp -t iaa.in.XXXXXX) || { PARSE_STATUS=Partial; return 1; }
+  stmp=$(mktemp -t iaa.st.XXXXXX)  || { command rm -f "$intmp"; PARSE_STATUS=Partial; return 1; }
+  cat > "$intmp"
+  if ! ensure_jxa_parser; then
+    command rm -f "$intmp" "$stmp"; PARSE_STATUS=Partial; return 1
+  fi
+  local osa_rc
+  osascript -l JavaScript "$JXA_PARSER_FILE" "$intmp" "$stmp"; osa_rc=$?
+  PARSE_STATUS=$(<"$stmp" 2>/dev/null)
+  # A crashed parser (nonzero exit) or empty status can't be trusted: fail closed to Partial.
+  if (( osa_rc != 0 )) || [[ -z $PARSE_STATUS ]]; then
+    PARSE_STATUS=Partial
+  fi
+  command rm -f "$intmp" "$stmp"
+  (( osa_rc == 0 )) && return 0 || return 1
+}
+
+# classify_arch: arch_kind -> category. Unknown for missing/unrecognized.
+classify_arch() {
+  case $1 in
+    arch_i64)      print -r -- IntelOnly ;;
+    arch_arm_i64)  print -r -- Universal ;;
+    arch_arm)      print -r -- AppleSilicon ;;
+    arch_ios)      print -r -- iOS ;;
+    arch_other)    print -r -- Other ;;
+    *)             print -r -- Unknown ;;
+  esac
+}
+
+# classify_arch_list: lipo arch list -> category, from the CFBundleExecutable main binary.
+classify_arch_list() {
+  emulate -L zsh
+  local archs=" ${1:l} "
+  local has_intel=0 has_arm=0 has_i386=0
+  # Only x86_64 is a Rosetta 2 target; i386 hasn't run since Catalina and isn't
+  # translated, so an i386-only slice must not join the Rosetta count.
+  [[ $archs == *" x86_64 "* ]] && has_intel=1
+  [[ $archs == *" arm64 "* || $archs == *" arm64e "* ]] && has_arm=1
+  [[ $archs == *" i386 "* ]] && has_i386=1
+  if (( has_intel && has_arm )); then
+    print -r -- Universal
+  elif (( has_intel )); then
+    print -r -- IntelOnly
+  elif (( has_arm )); then
+    print -r -- AppleSilicon
+  elif (( has_i386 )); then
+    # Legacy i386-only: real but non-translatable; Unknown so it surfaces as Partial.
+    print -r -- Unknown
+  else
+    print -r -- Unknown
+  fi
+}
+
+# in_scope: component-wise match vs SCOPE_ROOTS (rejects /ApplicationsBackup).
+in_scope() {
+  emulate -L zsh
+  local p=${1%/} root
+  for root in "${SCOPE_ROOTS[@]}"; do
+    root=${root%/}
+    [[ -z $root ]] && continue
+    if [[ $p == "$root" || $p == "$root"/* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# rosetta_status: N/A on Intel (gated on uname -m); Yes/No on Apple silicon.
+rosetta_status() {
+  emulate -L zsh
+  local arch=${1:-${MACHINE_ARCH:-$(uname -m)}}
+  if [[ $arch == x86_64 ]]; then
+    print -r -- "N/A"
+    return 0
+  fi
+  if [[ -e ${ROSETTA_RUNTIME:-/Library/Apple/usr/libexec/oah/libRosettaRuntime} ]]; then
+    print -r -- "Yes"
+  else
+    print -r -- "No"
+  fi
+}
+
+# Console-user helpers (overridable for tests via *_OVERRIDE vars).
+console_user() {
+  if [[ -n ${CONSOLE_USER_OVERRIDE+x} ]]; then
+    print -r -- "$CONSOLE_USER_OVERRIDE"
+    return 0
+  fi
+  command stat -f%Su /dev/console 2>/dev/null
+}
+
+is_valid_console_user() {
+  local u=$1
+  [[ -n $u && $u != root && $u != loginwindow && $u != _* ]]
+}
+
+console_home() {
+  emulate -L zsh
+  local u=$1 line
+  if [[ -n ${CONSOLE_HOME_OVERRIDE+x} ]]; then
+    print -r -- "$CONSOLE_HOME_OVERRIDE"
+    return 0
+  fi
+  line=$(command dscl . -read "/Users/$u" NFSHomeDirectory 2>/dev/null) || return 1
+  print -r -- "${line#NFSHomeDirectory: }"
+}
+
+# build_scope: assemble SCOPE_ROOTS + SCOPE_LABEL from config.
+build_scope() {
+  emulate -L zsh
+  typeset -ga SCOPE_ROOTS
+  SCOPE_ROOTS=(/Applications /Applications/Utilities)
+  if [[ ${SCAN_USER_APPS:-0} == 1 ]]; then
+    local u home
+    u=$(console_user)
+    if is_valid_console_user "$u"; then
+      home=$(console_home "$u")
+      # Only add ~/Applications if it exists; scope must not name a non-existent root.
+      [[ -n $home && -d ${home%/}/Applications ]] && SCOPE_ROOTS+=("${home%/}/Applications")
+    fi
+  fi
+  if [[ -n ${EXTRA_ROOT:-} ]]; then
+    # Reject roots with EA delimiters (; < > newline): SCOPE_LABEL is emitted verbatim
+    # in the ';'-delimited <result> line and would distort the EA.
+    if [[ $EXTRA_ROOT == *[$';\n<>']* ]]; then
+      logmsg "ignoring EXTRA_ROOT with EA-delimiter character(s) '$EXTRA_ROOT'"
+    elif [[ $EXTRA_ROOT == /* && -d $EXTRA_ROOT ]]; then
+      SCOPE_ROOTS+=("${EXTRA_ROOT%/}")
+    else
+      logmsg "ignoring invalid EXTRA_ROOT '$EXTRA_ROOT'"
+    fi
+  fi
+  typeset -g SCOPE_LABEL=${(j:,:)SCOPE_ROOTS}
+}
+
+# audit_apps: sp_json -> parse_records -> scope filter + classify + count. Sets AUDIT_*/INTEL_*.
+audit_apps() {
+  emulate -L zsh
+  local rawfile recfile
+  rawfile=$(mktemp -t iaa.raw.XXXXXX) || return 1
+  recfile=$(mktemp -t iaa.rec.XXXXXX) || { command rm -f "$rawfile"; return 1; }
+  integer sp_rc parse_rc
+  sp_json > "$rawfile"; sp_rc=$?
+  parse_records < "$rawfile" > "$recfile"; parse_rc=$?
+  local scan_status=${PARSE_STATUS:-Partial}
+  # A failed inventory/parser must never present as Complete: degrade to Partial.
+  (( sp_rc == 0 && parse_rc == 0 )) || scan_status=Partial
+  integer c_intel=0 c_uni=0 c_as=0 c_ios=0 c_other=0 c_unknown=0
+  typeset -ga INTEL_NAMES INTEL_PATHS
+  INTEL_NAMES=() INTEL_PATHS=()
+  local -a fields
+  local tok
+  while IFS= read -r -d '' tok; do fields+=("$tok"); done < "$recfile"
+  command rm -f "$rawfile" "$recfile"
+  integer i
+  for ((i = 1; i + 2 <= ${#fields}; i += 3)); do
+    local ak=${fields[i]} app_path=${fields[i+1]} app_name=${fields[i+2]}
+    # A record with no path can't be scope-tested: count it Unknown and force Partial.
+    if [[ -z $app_path ]]; then
+      (( c_unknown++ )); scan_status=Partial; continue
+    fi
+    in_scope "$app_path" || continue
+    case "$(classify_arch "$ak")" in
+      IntelOnly)    (( c_intel++ ));   INTEL_NAMES+=("$app_name"); INTEL_PATHS+=("$app_path") ;;
+      Universal)    (( c_uni++ )) ;;
+      AppleSilicon) (( c_as++ )) ;;
+      iOS)          (( c_ios++ )) ;;
+      Other)        (( c_other++ )) ;;
+      Unknown)      (( c_unknown++ )); scan_status=Partial ;;
+    esac
+  done
+  (( c_unknown > 0 )) && scan_status=Partial
+  typeset -g AUDIT_INTEL=$c_intel AUDIT_UNI=$c_uni AUDIT_AS=$c_as \
+             AUDIT_IOS=$c_ios AUDIT_OTHER=$c_other AUDIT_UNKNOWN=$c_unknown \
+             AUDIT_STATUS=$scan_status AUDIT_SOURCE=SystemProfiler
+  return 0
+}
+
+# direct_audit_apps: fallback when SPApplicationsDataType is empty/unusable. Walks the
+# roots (no symlink follow), classifies the CFBundleExecutable Mach-O with lipo;
+# missing/unreadable/non-Mach-O => Unknown => Partial.
+direct_audit_apps() {
+  emulate -L zsh
+  setopt local_options pipe_fail
+  integer c_intel=0 c_uni=0 c_as=0 c_ios=0 c_other=0 c_unknown=0
+  integer bundle_count=0 scan_failed=0
+  typeset -ga INTEL_NAMES INTEL_PATHS
+  INTEL_NAMES=() INTEL_PATHS=()
+  typeset -A seen
+  local root listfile app plist exe bin archs category app_name file_kind
+  local is_ios_wrapper
+  local -a wrapped_plists
+
+  listfile=$(mktemp -t iaa.apps.XXXXXX) || return 1
+  for root in "${SCOPE_ROOTS[@]}"; do
+    [[ -d $root ]] || { scan_failed=1; continue; }
+    if ! run_cmd /usr/bin/find "$root" -type d -name '*.app' -prune -print0 >> "$listfile" 2>/dev/null; then
+      scan_failed=1
+    fi
+  done
+
+  while IFS= read -r -d '' app; do
+    [[ -n ${seen[$app]:-} ]] && continue
+    seen[$app]=1
+    (( bundle_count++ ))
+    is_ios_wrapper=0
+    plist="$app/Contents/Info.plist"
+    if [[ ! -f $plist ]]; then
+      wrapped_plists=("$app"/Wrapper/*.app/Info.plist(N))
+      if (( ${#wrapped_plists} == 1 )); then
+        plist=${wrapped_plists[1]}
+        is_ios_wrapper=1
+      else
+        (( c_unknown++ )); scan_failed=1; continue
+      fi
+    fi
+    exe=$(run_cmd /usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist" 2>/dev/null)
+    if [[ -z $exe || $exe == */* ]]; then
+      (( c_unknown++ )); scan_failed=1; continue
+    fi
+    if (( is_ios_wrapper )); then
+      bin="${plist:h}/$exe"
+    else
+      bin="$app/Contents/MacOS/$exe"
+    fi
+    if [[ ! -f $bin ]]; then
+      (( c_unknown++ )); scan_failed=1; continue
+    fi
+    archs=$(run_cmd /usr/bin/lipo -archs "$bin" 2>/dev/null)
+    category=$(classify_arch_list "$archs")
+    if (( is_ios_wrapper )) && [[ $category != Unknown ]]; then
+      category=iOS
+    elif [[ $category == Unknown ]]; then
+      # lipo found no known arch: only a shebang script is legitimately "Other".
+      # file(1) says "text executable" only for a #! script; anything else stays Unknown.
+      file_kind=$(run_cmd /usr/bin/file -b "$bin" 2>/dev/null)
+      [[ ${file_kind:l} == *"text executable"* ]] && category=Other
+    fi
+    app_name=$(run_cmd /usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$plist" 2>/dev/null)
+    [[ -n $app_name ]] || app_name=$(run_cmd /usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$plist" 2>/dev/null)
+    [[ -n $app_name ]] || app_name=${app:t:r}
+    case $category in
+      IntelOnly)    (( c_intel++ )); INTEL_NAMES+=("$app_name"); INTEL_PATHS+=("$app") ;;
+      Universal)    (( c_uni++ )) ;;
+      AppleSilicon) (( c_as++ )) ;;
+      iOS)           (( c_ios++ )) ;;
+      Other)         (( c_other++ )) ;;
+      *)             (( c_unknown++ )); scan_failed=1 ;;
+    esac
+  done < "$listfile"
+  command rm -f "$listfile"
+
+  (( bundle_count > 0 )) || scan_failed=1
+  typeset -g AUDIT_INTEL=$c_intel AUDIT_UNI=$c_uni AUDIT_AS=$c_as \
+             AUDIT_IOS=$c_ios AUDIT_OTHER=$c_other AUDIT_UNKNOWN=$c_unknown \
+             AUDIT_SOURCE=DirectBundleScan
+  if (( scan_failed || c_unknown > 0 )); then
+    typeset -g AUDIT_STATUS=Partial
+  else
+    typeset -g AUDIT_STATUS=Complete
+  fi
+  return 0
+}
+
+# audit_apps_with_fallback: run the primary engine, then verify before trusting.
+# Partial primary => the direct bundle scan becomes the engine of record. A Complete
+# primary is not trusted alone (system_profiler can silently omit bundles): reconcile
+# it against a filesystem walk, and any disagreement fails closed to Partial, keeping
+# the direct scan's inventory.
+audit_apps_with_fallback() {
+  audit_apps || return 1
+
+  if [[ $AUDIT_STATUS != Complete ]]; then
+    if ! direct_audit_apps; then
+      typeset -g AUDIT_STATUS=Partial AUDIT_SOURCE=SystemProfiler+FallbackFailed
+    fi
+    return 0
+  fi
+
+  # Capture the primary result; direct_audit_apps overwrites the AUDIT_*/INTEL_* globals.
+  local p_intel=$AUDIT_INTEL p_uni=$AUDIT_UNI p_as=$AUDIT_AS \
+        p_ios=$AUDIT_IOS p_other=$AUDIT_OTHER p_unknown=$AUDIT_UNKNOWN
+  local -a p_names=("${INTEL_NAMES[@]}") p_paths=("${INTEL_PATHS[@]}")
+  integer p_total=$(( p_intel + p_uni + p_as + p_ios + p_other + p_unknown ))
+
+  restore_primary() {
+    typeset -ga INTEL_NAMES INTEL_PATHS
+    INTEL_NAMES=("${p_names[@]}") INTEL_PATHS=("${p_paths[@]}")
+    typeset -g AUDIT_INTEL=$p_intel AUDIT_UNI=$p_uni AUDIT_AS=$p_as \
+               AUDIT_IOS=$p_ios AUDIT_OTHER=$p_other AUDIT_UNKNOWN=$p_unknown
+  }
+
+  if ! direct_audit_apps; then
+    # Cannot verify completeness: keep the primary inventory but mark it Partial.
+    restore_primary
+    typeset -g AUDIT_STATUS=Partial AUDIT_SOURCE=SystemProfiler+ReconcileUnavailable
+    return 0
+  fi
+
+  integer d_total=$(( AUDIT_INTEL + AUDIT_UNI + AUDIT_AS + AUDIT_IOS + AUDIT_OTHER + AUDIT_UNKNOWN ))
+
+  # Reconcile the exact Intel-only PATH SETS, not just counts: two scans can both report
+  # IntelOnly:1 for different apps. Require identical sorted path sets before trusting primary.
+  local -a d_paths=("${INTEL_PATHS[@]}")
+  local pth prim_set dir_set
+  local -a p_norm d_norm
+  for pth in "${p_paths[@]}"; do p_norm+=("${pth%/}"); done
+  for pth in "${d_paths[@]}"; do d_norm+=("${pth%/}"); done
+  prim_set=${(pj:\n:)${(o)p_norm}}
+  dir_set=${(pj:\n:)${(o)d_norm}}
+
+  if [[ $AUDIT_STATUS == Complete ]] && (( AUDIT_INTEL == p_intel && d_total == p_total )) \
+     && [[ $prim_set == $dir_set ]]; then
+    # Both completed and agree: trust it, present the primary inventory (richer _name values).
+    restore_primary
+    typeset -g AUDIT_STATUS=Complete AUDIT_SOURCE=SystemProfiler+DirectReconciled
+    return 0
+  fi
+
+  # Disagreement or a Partial direct scan: fail closed to Partial and keep the
+  # direct scan's inventory, which surfaces the omitted bundle(s).
+  typeset -g AUDIT_STATUS=Partial AUDIT_SOURCE=SystemProfiler+DirectMismatch
+  return 0
+}
+
+# xesc: XML-escape a user-controlled name/path and scrub control chars before caching.
+xesc() {
+  emulate -L zsh
+  local s=$1
+  s=${s//[[:cntrl:]]/ }
+  s=${s//&/&amp;}
+  s=${s//</&lt;}
+  s=${s//>/&gt;}
+  print -r -- "$s"
+}
+
+# counts_line: the compact summary (VIEW=counts); single source of the counts payload.
+counts_line() {
+  # Escape SCOPE_LABEL like the app names/paths: EXTRA_ROOT filters ;<> but not &.
+  local scope; scope=$(xesc "$SCOPE_LABEL")
+  print -r -- "IntelOnly:${AUDIT_INTEL};Universal:${AUDIT_UNI};AppleSilicon:${AUDIT_AS};iOS:${AUDIT_IOS};Other:${AUDIT_OTHER};Unknown:${AUDIT_UNKNOWN};ScanStatus:${AUDIT_STATUS};DetectionSource:${AUDIT_SOURCE};RosettaRuntimePresent:${ROSETTA_STATUS};Arch:${MACHINE_ARCH};Scope:${scope}"
+}
+
+# Backward-compatible alias: earlier revisions called this ea_inner.
+ea_inner() { counts_line; }
+
+# app_lines: one `INTEL_APP | <name> | <path>` line per Intel-only bundle (VIEW=apps),
+# escaped and capped to Jamf's per-record bound. IntelApps:None marker when none.
+app_lines() {
+  emulate -L zsh
+  integer i n=${#INTEL_NAMES}
+  if (( n == 0 )); then
+    print -r -- "IntelApps:None"
+    return 0
+  fi
+  integer max_chars=${IAA_APPS_MAX_CHARS:-24000} used=0 omitted=0
+  local nm pt line
+  for ((i = 1; i <= n; i++)); do
+    nm=$(xesc "${INTEL_NAMES[i]}")
+    pt=$(xesc "${INTEL_PATHS[i]}")
+    line="INTEL_APP | ${nm} | ${pt}"
+    if (( used + ${#line} + 1 <= max_chars )); then
+      print -r -- "$line"
+      (( used += ${#line} + 1 ))
+    else
+      (( omitted++ ))
+    fi
+  done
+  (( omitted > 0 )) && print -r -- "TRUNCATED: ${omitted} Intel-only app(s) omitted to bound the EA value size"
+  return 0
+}
+
+# cache_body: what the collector writes / the reader slices. Line 1 = counts, rest = app list.
+cache_body() {
+  counts_line
+  app_lines
+}
+
+# ea_string: the live counts <result> line (MODE=ea, CLI use); recon uses the reader EA.
+ea_string() {
+  print -r -- "<result>$(counts_line)</result>"
+}
+
+# write_state (MODE=collector): atomically cache cache_body to the root-only state file
+# via temp-file + mv -f, so the reader sees the old or new file, never a half-write. Never
+# wraps in <result>; side effects route through run_cmd for DRY_RUN/test spy.
+write_state() {
+  emulate -L zsh
+  local dir=${INTEL_STATE_DIR:-/var/db/intel-app-auditor}
+  local statefile="$dir/result.txt" tmpfile body
+  body=$(cache_body)
+
+  if (( ${DRY_RUN:-0} )); then
+    logmsg "[dry-run] would cache collector state to $statefile"
+    logmsg "$body"
+    typeset -g STATE_FILE_PATH=$statefile
+    return 0
+  fi
+
+  if ! command mkdir -p "$dir" 2>/dev/null; then
+    logmsg "collector: could not create state directory $dir"
+    return 1
+  fi
+  # Fail closed on ownership/mode: if we can't establish a root-only, non-world-writable
+  # path, don't publish a cache the reader would trust.
+  if (( UID == 0 )); then
+    if ! run_cmd /usr/sbin/chown root:wheel "$dir"; then
+      logmsg "collector: refusing to publish -- could not chown $dir to root:wheel"
+      return 1
+    fi
+  fi
+  # Contents (app paths, usernames) are mildly sensitive; 0700, not world/group-writable.
+  if ! run_cmd /bin/chmod 0700 "$dir"; then
+    logmsg "collector: refusing to publish -- could not chmod 0700 $dir"
+    return 1
+  fi
+
+  # mktemp (not a $$-predictable name) so no local process can pre-plant a symlink
+  # at a guessable path we'd write through.
+  if ! tmpfile="$(command mktemp "$dir/result.txt.tmp.XXXXXX")"; then
+    logmsg "collector: failed to create temporary state file in $dir"
+    return 1
+  fi
+  if ! printf '%s' "$body" > "$tmpfile"; then
+    command rm -f "$tmpfile" 2>/dev/null
+    logmsg "collector: failed to write temporary state file $tmpfile"
+    return 1
+  fi
+  if ! run_cmd /bin/chmod 0600 "$tmpfile"; then
+    command rm -f "$tmpfile" 2>/dev/null
+    logmsg "collector: refusing to publish -- could not chmod 0600 $tmpfile"
+    return 1
+  fi
+  if (( UID == 0 )); then
+    if ! run_cmd /usr/sbin/chown root:wheel "$tmpfile"; then
+      command rm -f "$tmpfile" 2>/dev/null
+      logmsg "collector: refusing to publish -- could not chown $tmpfile to root:wheel"
+      return 1
+    fi
+  fi
+  if ! command mv -f "$tmpfile" "$statefile"; then
+    command rm -f "$tmpfile" 2>/dev/null
+    logmsg "collector: failed to rename temporary state file into place ($statefile)"
+    return 1
+  fi
+  logmsg "collector: cached state to $statefile"
+  typeset -g STATE_FILE_PATH=$statefile
+  return 0
+}
+
+# main: validate config, run the engine, dispatch on MODE.
+main() {
+  emulate -L zsh
+  setopt local_options pipe_fail
+
+  # Remove the materialized JXA parser file on any exit or signal.
+  trap '[[ -n ${JXA_PARSER_FILE:-} ]] && command rm -f "$JXA_PARSER_FILE"' EXIT
+  # A cleanup-only INT/TERM trap can return 0 and let zsh continue after the signal;
+  # clean up, then exit nonzero so a killed collector actually stops.
+  trap '[[ -n ${JXA_PARSER_FILE:-} ]] && command rm -f "$JXA_PARSER_FILE"; exit 1' INT TERM
+
+  # Jamf custom params start at $4; env fallback; safe defaults.
+  local p_mode=${4:-} p_scan=${5:-} p_timeout=${6:-} p_root=${7:-}
+  typeset -g MODE=${p_mode:-${MODE:-ea}}
+  typeset -g SCAN_USER_APPS=${p_scan:-${SCAN_USER_APPS:-0}}
+  typeset -g SP_TIMEOUT=${p_timeout:-${SP_TIMEOUT:-120}}
+  typeset -g EXTRA_ROOT=${p_root:-${EXTRA_ROOT:-}}
+
+  # Validate every input before use.
+  case $MODE in
+    ea|collector) ;;
+    *) logmsg "invalid MODE '$MODE'; defaulting to ea"; MODE=ea ;;
+  esac
+  [[ $SCAN_USER_APPS == (0|1) ]] || { logmsg "invalid SCAN_USER_APPS '$SCAN_USER_APPS'; defaulting to 0"; SCAN_USER_APPS=0; }
+  if [[ $SP_TIMEOUT != <-> ]] || (( SP_TIMEOUT < 1 || SP_TIMEOUT > 3600 )); then
+    logmsg "invalid SP_TIMEOUT '$SP_TIMEOUT'; defaulting to 120"
+    SP_TIMEOUT=120
+  fi
+
+  typeset -g MACHINE_ARCH=${MACHINE_ARCH:-$(uname -m)}
+  typeset -g ROSETTA_STATUS
+  ROSETTA_STATUS=$(rosetta_status)
+
+  build_scope
+  audit_apps_with_fallback || { logmsg "audit failed"; return 1; }
+
+  case $MODE in
+    ea)     ea_string ;;
+    collector)
+      # Cache the value for the thin reader EA; never print <result> here.
+      write_state || { logmsg "collector: state write failed"; return 1; }
+      ;;
+  esac
+  return 0
+}
+
+# Source guard: run main only when executed, not sourced (INTEL_AUDITOR_NO_MAIN=1 for tests).
+if [[ $ZSH_EVAL_CONTEXT != *:file* && -z ${INTEL_AUDITOR_NO_MAIN:-} ]]; then
+  main "$@"
+  exit $?
+fi
