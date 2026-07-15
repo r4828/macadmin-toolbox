@@ -102,7 +102,8 @@ logmsg() {
 }
 
 # ----------------------------------------------------------------------------
-# The ONE command adapter. All mutating / external commands go through here.
+# The ONE command adapter. All external commands go through here -- mutations
+# and read-only scans alike (so DRY_RUN previews intent, not classification).
 #   * If a CMD_ADAPTER_SPY function is defined (tests), delegate to it.
 #   * Else if DRY_RUN, log the intent and do nothing.
 #   * Else run it for real.
@@ -701,7 +702,13 @@ write_state() {
     return 1
   fi
 
-  tmpfile="$statefile.tmp.$$"
+  # mktemp (not a $$-predictable name) so no local process can pre-plant a
+  # symlink at a guessable path we would then write through; the enclosing dir
+  # is already 0700 root, this closes the residual mkdir->chmod window too.
+  if ! tmpfile="$(command mktemp "$dir/result.txt.tmp.XXXXXX")"; then
+    logmsg "collector: failed to create temporary state file in $dir"
+    return 1
+  fi
   if ! printf '%s' "$body" > "$tmpfile"; then
     command rm -f "$tmpfile" 2>/dev/null
     logmsg "collector: failed to write temporary state file $tmpfile"

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- SPDX-FileCopyrightText: 2026 Robert Flanagan
+<!-- SPDX-FileCopyrightText: 2026 Robert Flanagan and macadmin-toolbox contributors
      SPDX-License-Identifier: MIT
      Reference copy only: install.sh generates the deployed plist at install time,
      including any EXTRA_ROOT set via Jamf parameter 10. -->

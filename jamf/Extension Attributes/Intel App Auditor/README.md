@@ -202,6 +202,7 @@ The scan runs two engines — the `system_profiler` primary and the direct `lipo
 | `NOT_COLLECTED` | No state file yet, or its mtime is unreadable (collector installed moments ago, or this Mac is out of scope for the install policy). |
 | `STALE (collector has not run in <n>s, threshold <t>s; last collected: <time>). Cached value follows:\n<value>` | The state file is older than 2× the configured interval. The last-known-good value (sliced to the same view) is still surfaced beneath the flag. |
 | `MALFORMED_CACHE` | The `apps` view found a cache that exists but has no recognizable app-list section — counts-only, truncated, or an older/foreign format. Returned instead of a reassuring `IntelApps:None`, so a corrupt cache can never masquerade as a migrated Mac. |
+| `TRUNCATED: <n> Intel-only app(s) omitted...` | The `apps` list hit the 24000-char cap; the remaining `<n>` Intel-only apps are counted but not listed. The `counts` view still reports the full `IntelOnly:` total. |
 | `IntelApps:None` | Reserved for a **validated** result: the collector wrote this marker because the machine genuinely has zero Intel-only apps. |
 
 ## Smart Group scoping recipes

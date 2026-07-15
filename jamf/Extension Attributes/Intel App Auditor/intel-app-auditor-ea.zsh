@@ -49,6 +49,8 @@ _iaa_state_file="$_iaa_state_dir/result.txt"
 # rewrite the cache), and -- when the reader itself runs as root at recon -- a
 # node not owned by root. Returns 0 when safe (publication finding 12).
 _iaa_state_path_safe() {
+    emulate -L zsh   # pin 1-based scalar subscripting; /etc/zshenv (sourced even
+                     # under --no-rcs) could set KSH_ARRAYS and skew perm[6]/perm[9]
     local p="$1" perm owner
     [[ -L "$p" ]] && return 1
     perm="$("$STAT" -f '%Sp' "$p" 2>/dev/null)" || return 1

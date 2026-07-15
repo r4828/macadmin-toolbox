@@ -287,7 +287,8 @@ logmsg() {
 }
 
 # ----------------------------------------------------------------------------
-# The ONE command adapter. All mutating / external commands go through here.
+# The ONE command adapter. All external commands go through here -- mutations
+# and read-only scans alike (so DRY_RUN previews intent, not classification).
 #   * If a CMD_ADAPTER_SPY function is defined (tests), delegate to it.
 #   * Else if DRY_RUN, log the intent and do nothing.
 #   * Else run it for real.
@@ -886,7 +887,13 @@ write_state() {
     return 1
   fi
 
-  tmpfile="$statefile.tmp.$$"
+  # mktemp (not a $$-predictable name) so no local process can pre-plant a
+  # symlink at a guessable path we would then write through; the enclosing dir
+  # is already 0700 root, this closes the residual mkdir->chmod window too.
+  if ! tmpfile="$(command mktemp "$dir/result.txt.tmp.XXXXXX")"; then
+    logmsg "collector: failed to create temporary state file in $dir"
+    return 1
+  fi
   if ! printf '%s' "$body" > "$tmpfile"; then
     command rm -f "$tmpfile" 2>/dev/null
     logmsg "collector: failed to write temporary state file $tmpfile"
@@ -1007,6 +1014,13 @@ if [ -n "${EXTRA_ROOT}" ]; then
     EXTRA_ROOT_XML="		<key>EXTRA_ROOT</key>
 		<string>${EXTRA_ROOT}</string>
 "
+fi
+
+# launchd does not create parent directories for StandardOutPath/StandardErrorPath;
+# a custom nested LOG_FILE would make the daemon fail to start. Ensure the dir exists.
+LOG_DIR=$(dirname "${LOG_FILE}")
+if [ ! -d "${LOG_DIR}" ]; then
+    mkdir -p "${LOG_DIR}" || { log "install.sh: could not create log directory ${LOG_DIR}"; exit 1; }
 fi
 
 log "Writing LaunchDaemon ${PLIST_DEST} (Label ${LABEL})"

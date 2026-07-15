@@ -218,6 +218,13 @@ if [ -n "${EXTRA_ROOT}" ]; then
 "
 fi
 
+# launchd does not create parent directories for StandardOutPath/StandardErrorPath;
+# a custom nested LOG_FILE would make the daemon fail to start. Ensure the dir exists.
+LOG_DIR=$(dirname "${LOG_FILE}")
+if [ ! -d "${LOG_DIR}" ]; then
+    mkdir -p "${LOG_DIR}" || { log "install.sh: could not create log directory ${LOG_DIR}"; exit 1; }
+fi
+
 log "Writing LaunchDaemon ${PLIST_DEST} (Label ${LABEL})"
 cat > "${PLIST_DEST}" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
