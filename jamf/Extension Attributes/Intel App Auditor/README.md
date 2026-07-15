@@ -186,14 +186,14 @@ The scan runs two engines (the `system_profiler` primary and the direct `lipo` d
 
 | Value | Meaning |
 | --- | --- |
-| `SystemProfiler+DirectReconciled` | Primary was Complete **and** agreed with the direct disk scan on the Intel-only count and total in-scope bundle count. Trusted; primary inventory presented. |
+| `SystemProfiler+DirectReconciled` | Primary was Complete **and** agreed with the direct disk scan on the exact Intel-only path set and the total in-scope bundle count. Trusted; primary inventory presented. |
 | `SystemProfiler+DirectMismatch` | Primary was Complete but disagreed with disk (or disk was Partial). Failed closed to `Partial`; the direct scan's inventory is presented (it surfaces the omitted app). |
 | `SystemProfiler+ReconcileUnavailable` | Primary was Complete but the reconciling disk scan could not run. Primary inventory kept, marked `Partial`. |
 | `DirectBundleScan` | Primary was Partial to begin with, so the direct disk scan is the engine of record. |
 | `SystemProfiler+FallbackFailed` | Primary was Partial and the fallback disk scan could not run either. |
 | `SystemProfiler` | Standalone primary path before any fallback (rare in practice). |
 
-**Reconciliation, briefly.** `system_profiler` can return a well-formed list that silently omits installed bundles, and nothing in its own output proves the list is exhaustive. So a Complete primary is not trusted on its own; it is cross-checked against an independent filesystem walk. The two must agree on the Intel-only count and the total in-scope bundle count, and the disk scan must itself be Complete. Any disagreement, or a disk scan that is itself Partial or cannot run, fails closed to `ScanStatus:Partial`. On a real mismatch the direct scan's inventory wins, because that is the engine that just found the bundle `system_profiler` missed.
+**Reconciliation, briefly.** `system_profiler` can return a well-formed list that silently omits installed bundles, and nothing in its own output proves the list is exhaustive. So a Complete primary is not trusted on its own; it is cross-checked against an independent filesystem walk. The two must agree on the exact Intel-only path set (identical sorted paths, not just matching counts, since two scans can each report `IntelOnly:1` for different apps) and on the total in-scope bundle count, and the disk scan must itself be Complete. Any disagreement, or a disk scan that is itself Partial or cannot run, fails closed to `ScanStatus:Partial`. On a real mismatch the direct scan's inventory wins, because that is the engine that just found the bundle `system_profiler` missed.
 
 ### Reader sentinels
 
@@ -263,11 +263,11 @@ Both scripts are written in **zsh** (`#!/bin/zsh --no-rcs`). zsh has been the ma
 
 The collector engine, the `system_profiler` / disk reconciler, the reader/EA, and the installer were exercised on real throwaway [Tart](https://tart.run/) VMs cloned from the official cirruslabs base images for macOS 14 (Sonoma), 15 (Sequoia), and 26 (Tahoe), driven from a Mac mini (M1, macOS 26.5.2). Coverage was **82 unique cases across all three OSes, for 246 case-executions**. 39 of those cases are a purpose-built adversarial battery authored against the tool's own source, with every asserted string checked to a `file:line` before use.
 
-Result: **246 / 246 effective pass, zero tool defects.** The first pass was 237/246; the nine misses broke down as six single-OS infrastructure flakes (each passing on a clean re-run and on the other two OSes) plus one stale assertion in the test suite itself, where the hardened reader now returns `MALFORMED_CACHE` ahead of `STALE` on a counts-only cache (safer than the old test assumed). None was a defect in the shipping tool.
+Result: **246 / 246 effective pass, zero tool defects.** The first pass was 237/246; the nine misses were six single-OS infrastructure flakes (each passing on a clean re-run and on the other two OSes) plus one stale test-suite assertion that failed on all three OSes (three executions), where the hardened reader now returns `MALFORMED_CACHE` ahead of `STALE` on a counts-only cache (safer than the old test assumed). Six plus three is the nine. None was a defect in the shipping tool.
 
 What the matrix confirmed on every OS:
 
-- **No false clean zero.** Timeout, empty output, malformed cache, unknown-arch, and missing-path records all resolve to `Unknown` + `ScanStatus:Partial`, never a reassuring `IntelOnly:0`.
+- **No false clean zero.** At the engine layer, timeout, empty output, malformed `system_profiler` output, unknown-arch, and missing-path records all resolve to `Unknown` + `ScanStatus:Partial`, never a reassuring `IntelOnly:0`. (A malformed *cache* is a separate, reader-layer concern surfaced as `MALFORMED_CACHE`.)
 - **Reconciliation both ways.** An agreeing `system_profiler` / disk pair stays `Complete` (`DetectionSource:SystemProfiler+DirectReconciled`); any divergence on count or exact path-set fails closed to `Partial`, and the disk scan's inventory wins.
 - **Architecture classification.** `i386`-only → `Unknown` (not a Rosetta target); fat `i386`+`x86_64` → `IntelOnly`; `arm64e` → `AppleSilicon`; universal ≠ `IntelOnly`; shebang-script mains → `Other`.
 - **Security.** `<result>`-injection payloads in app names are XML-escaped before caching, so no live tag pair reaches the reader, and a hostile `PATH` cannot hijack the root collector.
