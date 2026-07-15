@@ -7,9 +7,9 @@
 
 Answer one fleet question ahead of Rosetta 2's removal: **which Macs still have Intel-classified application bundles, and which apps are they?** This is a Jamf Pro Extension Attribute (EA), fed by a background collector, that inventories every Intel-only (`x86_64`) application on a managed Mac so you can scope, track, and close out an Apple silicon migration. The collector classifies every application bundle under `/Applications` and `/Applications/Utilities` (and, optionally, the console user's `~/Applications`) as IntelOnly / Universal / AppleSilicon / iOS / Other / Unknown, records whether the Rosetta 2 runtime file is present, and caches the result. The EA reads that cached value into the computer record so it is usable as Smart Group scope criteria and Advanced Search reporting.
 
-Classification is on the machine field `arch_kind` from `system_profiler -json SPApplicationsDataType` (never the localized "Kind: Intel" text), cross-checked against an independent `lipo`-based direct bundle scan. A broken or omission-prone inventory degrades to `ScanStatus:Partial` — never a false clean zero.
+Classification is on the machine field `arch_kind` from `system_profiler -json SPApplicationsDataType` (never the localized "Kind: Intel" text), cross-checked against an independent `lipo`-based direct bundle scan. A broken or omission-prone inventory degrades to `ScanStatus:Partial`. It never reports a false clean zero.
 
-> Where it fits: **SEE** (which Macs still run Intel-only apps, and which apps) → **DECIDE** (target replacement, repackaging, or retirement at exactly those Macs) → **PROVE** (a `ScanStatus:Complete` + `IntelOnly:0` Smart Group is your audit-ready record that a Mac is Rosetta-free before Rosetta 2 goes away). It runs on any Jamf Pro tier with zero external dependencies: the only moving parts are the Jamf binary you already have and one small launchd-scheduled collector.
+> Where it fits: the collector tells you which Macs still run Intel-only apps and which apps they are, so you can plan replacement, repackaging, or retirement for the machines that need it. Once a Mac reports `ScanStatus:Complete` with `IntelOnly:0`, a Smart Group built on those values is your record that it has no remaining Intel-only apps ahead of Rosetta 2's removal (a separate question from whether the Rosetta 2 runtime is still installed, which `RosettaRuntimePresent` reports on its own). It runs on any Jamf Pro tier with no external dependencies: just the Jamf binary you already have and one small launchd-scheduled collector.
 
 ## Table of contents
 
@@ -31,7 +31,7 @@ Classification is on the machine field `arch_kind` from `system_profiler -json S
 ## Quick start
 
 1. Deploy [`install.sh`](./install.sh) fleet-wide from a Jamf Pro policy (as root, once per computer). It installs the collector engine, creates the root-only state directory, and loads the LaunchDaemon; the first scan runs immediately (`RunAtLoad`).
-2. Create a computer Extension Attribute (Data Type **String**, Input Type **Script**) and paste in [`intel-app-auditor-ea.zsh`](./intel-app-auditor-ea.zsh) — the thin reader, **not** the engine. Leave the `both` trigger word uncommented, or switch it to `counts` / `apps` (and add a second EA for the other view if you want both columns).
+2. Create a computer Extension Attribute (Data Type **String**, Input Type **Script**) and paste in [`intel-app-auditor-ea.zsh`](./intel-app-auditor-ea.zsh), the thin reader, **not** the engine. Leave the `both` trigger word uncommented, or switch it to `counts` / `apps` (and add a second EA for the other view if you want both columns).
 3. Build Smart Groups on the value (see [Smart Group scoping recipes](#smart-group-scoping-recipes)).
 
 > **The reader is useless without the collector running.** Deploy step 1 before (or in the same scope as) the EA, or every Mac reports `NOT_COLLECTED` forever.
@@ -71,8 +71,8 @@ intel-app-auditor.zsh   ──writes──▶  /var/db/intel-app-auditor/result.
 
 [`intel-app-auditor.zsh`](./intel-app-auditor.zsh) is the detection engine with exactly **two run modes** (anything else logs `invalid MODE ...; defaulting to ea`):
 
-- **`collector`** — run by the installed LaunchDaemon. Scans on its own timer and atomically caches the reader payload — the counts summary line plus the Intel-only app list — to the state file. It writes no `<result>` wrapper and produces no stdout the EA depends on.
-- **`ea`** — a standalone / command-line convenience that scans now and prints one counts `<result>` line. This is **not** the Jamf recon path; the reader is. It exists for spot checks and testing.
+- **`collector`**: run by the installed LaunchDaemon. Scans on its own timer and atomically caches the reader payload (the counts summary line plus the Intel-only app list) to the state file. It writes no `<result>` wrapper and produces no stdout the EA depends on.
+- **`ea`**: a standalone / command-line convenience that scans now and prints one counts `<result>` line. This is **not** the Jamf recon path; the reader is. It exists for spot checks and testing.
 
 There is no report, swiftDialog, Self Service, or export mode. The engine only scans and (in collector mode) caches.
 
@@ -89,9 +89,9 @@ When the engine runs standalone (CLI, or pasted directly as a script), it reads 
 | `$6` | `SP_TIMEOUT`: `system_profiler` timeout seconds (1–3600) | `120` |
 | `$7` | `EXTRA_ROOT`: one extra absolute application dir to audit | none |
 
-Each parameter also has an environment-variable equivalent of the same name. When the engine runs as the installed LaunchDaemon there are no positional parameters — `install.sh` delivers `MODE=collector`, `SCAN_USER_APPS`, `SP_TIMEOUT`, `EXTRA_ROOT`, and `INTEL_STATE_DIR` through the plist's `EnvironmentVariables` instead.
+Each parameter also has an environment-variable equivalent of the same name. When the engine runs as the installed LaunchDaemon there are no positional parameters; `install.sh` delivers `MODE=collector`, `SCAN_USER_APPS`, `SP_TIMEOUT`, `EXTRA_ROOT`, and `INTEL_STATE_DIR` through the plist's `EnvironmentVariables` instead.
 
-### One reader, three trigger words — all Smart-Group-able
+### One reader, three trigger words, all Smart-Group-able
 
 A Jamf EA is a pasted script and takes no policy parameters. The reader is a single file with **three trigger words** at the bottom; each names one view, and every view is a single `<result>` value, so every view is usable as Smart Group criteria:
 
@@ -101,7 +101,7 @@ A Jamf EA is a pasted script and takes no policy parameters. The reader is a sin
 | `apps` | the Intel-only app list (name + path), or `IntelApps:None` | a specific app by name or path, e.g. `like "Final Cut Pro"` |
 | `both` | summary line, then the app list (default) | either of the above, against one EA |
 
-To pick a view, keep exactly **one** of the three trigger words uncommented at the bottom of the reader (the other two stay commented — two uncommented would emit two `<result>` lines and be invalid):
+To pick a view, keep exactly **one** of the three trigger words uncommented at the bottom of the reader (the other two stay commented; two uncommented would emit two `<result>` lines and be invalid):
 
 ```zsh
 # ── Jamf EA trigger: keep exactly ONE uncommented ──
@@ -110,13 +110,13 @@ both
 # apps
 ```
 
-From the command line you can also pass the trigger word as the first argument — `intel-app-auditor-ea.zsh counts` — which is how the test suite exercises all three. Want a **Counts** column *and* an **Apps** column in Jamf? Create two EAs from this one reader, uncommenting `counts` in one and `apps` in the other; the scan still runs only once, in the collector, and both EAs slice the same cached file. Prefer a single column? Leave `both` — you can still match counts *and* app names against that one multi-line value.
+From the command line you can also pass the trigger word as the first argument (`intel-app-auditor-ea.zsh counts`), which is how the test suite exercises all three. Want a **Counts** column *and* an **Apps** column in Jamf? Create two EAs from this one reader, uncommenting `counts` in one and `apps` in the other; the scan still runs only once, in the collector, and both EAs slice the same cached file. Prefer a single column? Leave `both`. You can still match counts *and* app names against that one multi-line value.
 
-**Why split it?** A script EA that scans adds its `system_profiler` runtime to every inventory update (`jamf recon` / Update Inventory) — for state that barely changes. The split moves that scan onto the collector's own scheduled `launchd` budget so recon just reads one small local file, and it adds freshness / integrity sentinels the monolith never had. Intel-to-Apple migration is a slow, monthly-scale trend, so a weekly scan captures it fine for most fleets — but the cadence is yours: set the collector interval at install time and the reader's staleness threshold (2× the interval) tracks it automatically. (The LaunchDaemon also runs at load; missed `StartInterval` firings during sleep are not replayed.)
+**Why split it?** A script EA that scans adds its `system_profiler` runtime to every inventory update (`jamf recon` / Update Inventory), for state that barely changes. The split moves that scan onto the collector's own scheduled `launchd` budget so recon just reads one small local file, and it adds freshness / integrity sentinels the monolith never had. Intel-to-Apple migration is a slow, monthly-scale trend, so a weekly scan captures it fine for most fleets. The cadence is still yours: set the collector interval at install time and the reader's staleness threshold (2× the interval) tracks it automatically. (The LaunchDaemon also runs at load; missed `StartInterval` firings during sleep are not replayed.)
 
 ## Install via a Jamf policy
 
-[`install.sh`](./install.sh) is fully self-contained: the engine ([`intel-app-auditor.zsh`](./intel-app-auditor.zsh)) is embedded inside it via a heredoc, so deliver it as one **Scripts** payload. It is idempotent — scope it to run once per computer (re-running just reinstalls in place).
+[`install.sh`](./install.sh) is self-contained: the engine ([`intel-app-auditor.zsh`](./intel-app-auditor.zsh)) is embedded inside it via a heredoc, so deliver it as one **Scripts** payload. It is idempotent; scope it to run once per computer (re-running just reinstalls in place).
 
 ```bash
 sudo ./install.sh
@@ -182,18 +182,18 @@ The reader emits one `<result>` value, sliced to the active trigger word: `count
 
 ### DetectionSource values
 
-The scan runs two engines — the `system_profiler` primary and the direct `lipo` disk scan — and reconciles them. `DetectionSource` records which path produced the value and whether it was cross-checked:
+The scan runs two engines (the `system_profiler` primary and the direct `lipo` disk scan) and reconciles them. `DetectionSource` records which path produced the value and whether it was cross-checked:
 
 | Value | Meaning |
 | --- | --- |
-| `SystemProfiler+DirectReconciled` | Primary was Complete **and** agreed with the direct disk scan on the Intel-only count and total in-scope bundle count. Trusted; primary inventory presented. |
+| `SystemProfiler+DirectReconciled` | Primary was Complete **and** agreed with the direct disk scan on the exact Intel-only path set and the total in-scope bundle count. Trusted; primary inventory presented. |
 | `SystemProfiler+DirectMismatch` | Primary was Complete but disagreed with disk (or disk was Partial). Failed closed to `Partial`; the direct scan's inventory is presented (it surfaces the omitted app). |
 | `SystemProfiler+ReconcileUnavailable` | Primary was Complete but the reconciling disk scan could not run. Primary inventory kept, marked `Partial`. |
 | `DirectBundleScan` | Primary was Partial to begin with, so the direct disk scan is the engine of record. |
 | `SystemProfiler+FallbackFailed` | Primary was Partial and the fallback disk scan could not run either. |
 | `SystemProfiler` | Standalone primary path before any fallback (rare in practice). |
 
-**Reconciliation, briefly.** `system_profiler` can return a well-formed list that silently omits installed bundles, and nothing in its own output proves the list is exhaustive. So a Complete primary is not trusted on its own — it is cross-checked against an independent filesystem walk. The two must agree on the Intel-only count and the total in-scope bundle count, and the disk scan must itself be Complete. Any disagreement, or a disk scan that is itself Partial or cannot run, fails closed to `ScanStatus:Partial`. On a real mismatch the direct scan's inventory wins, because that is the engine that just found the bundle `system_profiler` missed.
+**Reconciliation, briefly.** `system_profiler` can return a well-formed list that silently omits installed bundles, and nothing in its own output proves the list is exhaustive. So a Complete primary is not trusted on its own; it is cross-checked against an independent filesystem walk. The two must agree on the exact Intel-only path set (identical sorted paths, not just matching counts, since two scans can each report `IntelOnly:1` for different apps) and on the total in-scope bundle count, and the disk scan must itself be Complete. Any disagreement, or a disk scan that is itself Partial or cannot run, fails closed to `ScanStatus:Partial`. On a real mismatch the direct scan's inventory wins, because that is the engine that just found the bundle `system_profiler` missed.
 
 ### Reader sentinels
 
@@ -201,7 +201,7 @@ The scan runs two engines — the `system_profiler` primary and the direct `lipo
 | --- | --- |
 | `NOT_COLLECTED` | No state file yet, or its mtime is unreadable (collector installed moments ago, or this Mac is out of scope for the install policy). |
 | `STALE (collector has not run in <n>s, threshold <t>s; last collected: <time>). Cached value follows:\n<value>` | The state file is older than 2× the configured interval. The last-known-good value (sliced to the same view) is still surfaced beneath the flag. |
-| `MALFORMED_CACHE` | The `apps` view found a cache that exists but has no recognizable app-list section — counts-only, truncated, or an older/foreign format. Returned instead of a reassuring `IntelApps:None`, so a corrupt cache can never masquerade as a migrated Mac. |
+| `MALFORMED_CACHE` | The reader found a cache that fails full-format validation (a counts-only or an older/foreign format), returned for whichever view was requested because validation runs before the view is sliced. A valid `TRUNCATED:` marker is not malformed. Returned instead of a reassuring `IntelApps:None`, so a corrupt cache can never masquerade as a migrated Mac. |
 | `TRUNCATED: <n> Intel-only app(s) omitted...` | The `apps` list hit the 24000-char cap; the remaining `<n>` Intel-only apps are counted but not listed. The `counts` view still reports the full `IntelOnly:` total. |
 | `IntelApps:None` | Reserved for a **validated** result: the collector wrote this marker because the machine genuinely has zero Intel-only apps. |
 
@@ -211,31 +211,31 @@ Assumes an EA named **Intel App Auditor**. Count- and status-based criteria need
 
 | Intent | Criteria |
 | --- | --- |
-| **Trustworthy migrated Mac** (compound — use all six) | `Intel App Auditor` `does not contain` `NOT_COLLECTED` **and** `does not contain` `STALE` **and** `does not contain` `MALFORMED_CACHE` **and** `contains` `ScanStatus:Complete` **and** `contains` `Unknown:0` **and** `contains` `IntelOnly:0` |
+| **Trustworthy migrated Mac** (compound: use all six) | `Intel App Auditor` `does not contain` `NOT_COLLECTED` **and** `does not contain` `STALE` **and** `does not contain` `MALFORMED_CACHE` **and** `contains` `ScanStatus:Complete` **and** `contains` `Unknown:0` **and** `contains` `IntelOnly:0` |
 | **Still has Intel apps** | `Intel App Auditor` `matches regex` `IntelOnly:[1-9]` |
 | **Has a specific Intel-only app installed** | `Intel App Auditor` `like` `INTEL_APP \| Final Cut Pro` (apps / both view) |
 | **Needs attention / untrustworthy read** | `Intel App Auditor` `like` `ScanStatus:Partial` **or** `like` `STALE` **or** `is` `NOT_COLLECTED` **or** `like` `MALFORMED_CACHE` |
 | **Rosetta runtime present** | `Intel App Auditor` `like` `RosettaRuntimePresent:Yes` |
 
-> **Never smart-group "migrated" on `IntelOnly:0` alone.** `IntelOnly:0` also appears in a `Partial` scan, a stale cache, and every other view that happens to contain the substring. A Mac is only trustworthy-migrated when it is **not** `NOT_COLLECTED`, **not** `STALE`, **not** `MALFORMED_CACHE`, is `ScanStatus:Complete`, has `Unknown:0`, and has `IntelOnly:0` — hence the compound criteria above. Build the "still has Intel apps" group as the compound-inverse (any of the untrustworthy states, or `IntelOnly` matching `[1-9]`), so a degraded read never lands in either clean bucket by accident.
+> **Never smart-group "migrated" on `IntelOnly:0` alone.** `IntelOnly:0` also appears in a `Partial` scan, a stale cache, and every other view that happens to contain the substring. A Mac is only trustworthy-migrated when it is **not** `NOT_COLLECTED`, **not** `STALE`, **not** `MALFORMED_CACHE`, is `ScanStatus:Complete`, has `Unknown:0`, and has `IntelOnly:0`; hence the compound criteria above. The "still has Intel apps" row above matches `IntelOnly:[1-9]`; route the untrustworthy states (`NOT_COLLECTED`, `STALE`, `MALFORMED_CACHE`, `ScanStatus:Partial`) to the separate "needs attention" group, so a degraded read never lands in either clean bucket by accident.
 
 ## Detection details
 
 - **Classification (primary).** `arch_i64` → IntelOnly; `arch_arm_i64` → Universal; `arch_arm` → AppleSilicon; `arch_ios` → iOS; `arch_other` → Other. Missing or unrecognized `arch_kind` → Unknown, which forces `ScanStatus:Partial`.
 - **Classification (direct `lipo` scan).** `x86_64` → IntelOnly; `x86_64`+`arm64` → Universal; `arm64` / `arm64e` → AppleSilicon. A pure `i386` (32-bit) binary → **Unknown**, not IntelOnly: only `x86_64` is a Rosetta 2 translation target, and 32-bit Intel code has not run on macOS since Catalina. A `lipo`-unrecognized main executable is `Other` only when `file(1)` reports a real text (shebang-script) executable; anything else stays Unknown → Partial.
 - **Never a silent drop.** A record with no path is counted as Unknown and forces Partial (validated *before* scope filtering), so a missing-path record can never disappear into a clean zero.
-- **Scope.** Application bundles under the configured roots (default `/Applications`, `/Applications/Utilities`), matched component-wise so `/ApplicationsBackup` is rejected. `~/Applications` is added only when `SCAN_USER_APPS=1` **and** it exists. `EXTRA_ROOT` adds one absolute directory if it exists and contains no EA-delimiter characters. Only each bundle's **top-level** architecture is classified — not nested helpers, frameworks, plug-ins, login items, or CLI tools (a Universal app can bundle an Intel-only helper), and not execution history.
-- **Rosetta.** `RosettaRuntimePresent` is `Yes`/`No` on Apple silicon and `N/A` on Intel Macs. It is a **file-presence signal only** — it checks for `/Library/Apple/usr/libexec/oah/libRosettaRuntime` and nothing more. It is not proof that Rosetta is installed correctly or that any Intel app can launch.
+- **Scope.** Application bundles under the configured roots (default `/Applications`, `/Applications/Utilities`), matched component-wise so `/ApplicationsBackup` is rejected. `~/Applications` is added only when `SCAN_USER_APPS=1` **and** it exists. `EXTRA_ROOT` adds one absolute directory if it exists and contains no EA-delimiter characters. Only each bundle's **top-level** architecture is classified, not nested helpers, frameworks, plug-ins, login items, or CLI tools (a Universal app can bundle an Intel-only helper), and not execution history.
+- **Rosetta.** `RosettaRuntimePresent` is `Yes`/`No` on Apple silicon and `N/A` on Intel Macs. It is a **file-presence signal only**: it checks for `/Library/Apple/usr/libexec/oah/libRosettaRuntime` and nothing more. It is not proof that Rosetta is installed correctly or that any Intel app can launch.
 
 ## launchd behavior
 
 The installed collector plist sets:
 
-- **`StartInterval 604800`** — a 7-day default cadence (one install parameter; any interval ≥ 600 s).
-- **`RunAtLoad true`** — the collector runs once the moment it is loaded, so the first value appears without waiting a full interval.
-- **`ProcessType Background`** — a Background classification that applies CPU/I/O resource limits to protect the user experience. This is resource-limited scheduling, **not** "lowest priority."
+- **`StartInterval 604800`**: a 7-day default cadence (one install parameter; any interval ≥ 600 s).
+- **`RunAtLoad true`**: the collector runs once the moment it is loaded, so the first value appears without waiting a full interval.
+- **`ProcessType Background`**: a Background classification that applies CPU/I/O resource limits to protect the user experience. This is resource-limited scheduling, **not** "lowest priority."
 
-`StartInterval` firings are missed while the Mac is asleep or while a prior run is still in progress — expected for a periodic background job, and the reader's `STALE` sentinel surfaces it if a Mac goes quiet for longer than 2× the interval.
+`StartInterval` firings are missed while the Mac is asleep or while a prior run is still in progress. That is expected for a periodic background job, and the reader's `STALE` sentinel surfaces it if a Mac goes quiet for longer than 2× the interval.
 
 ## Maintenance and tests
 
@@ -259,7 +259,27 @@ Both scripts are written in **zsh** (`#!/bin/zsh --no-rcs`). zsh has been the ma
 
 ## Verification snapshot
 
-A single dated run on one Mac (macOS 15.4.1, arm64, Spotlight disabled) — one machine, one moment, not a fleet figure:
+### Cross-OS test matrix
+
+The collector engine, the `system_profiler` / disk reconciler, the reader/EA, and the installer were exercised on real throwaway [Tart](https://tart.run/) VMs cloned from the official cirruslabs base images for macOS 14 (Sonoma), 15 (Sequoia), and 26 (Tahoe), driven from a Mac mini (M1, macOS 26.5.2). Coverage was **82 unique cases across all three OSes, for 246 case-executions**. 39 of those cases are a purpose-built adversarial battery authored against the tool's own source, with every asserted string checked to a `file:line` before use.
+
+Result: **246 / 246 effective pass, zero tool defects.** The first pass was 237/246; the nine misses were six single-OS infrastructure flakes (each passing on a clean re-run and on the other two OSes) plus one stale test-suite assertion that failed on all three OSes (three executions), where the hardened reader now returns `MALFORMED_CACHE` ahead of `STALE` on a counts-only cache (safer than the old test assumed). Six plus three is the nine. None was a defect in the shipping tool.
+
+What the matrix confirmed on every OS:
+
+- **No false clean zero.** At the engine layer, timeout, empty output, malformed `system_profiler` output, unknown-arch, and missing-path records all resolve to `Unknown` + `ScanStatus:Partial`, never a reassuring `IntelOnly:0`. (A malformed *cache* is a separate, reader-layer concern surfaced as `MALFORMED_CACHE`.)
+- **Reconciliation both ways.** An agreeing `system_profiler` / disk pair stays `Complete` (`DetectionSource:SystemProfiler+DirectReconciled`); any divergence on count or exact path-set fails closed to `Partial`, and the disk scan's inventory wins.
+- **Architecture classification.** `i386`-only → `Unknown` (not a Rosetta target); fat `i386`+`x86_64` → `IntelOnly`; `arm64e` → `AppleSilicon`; universal ≠ `IntelOnly`; shebang-script mains → `Other`.
+- **Security.** `<result>`-injection payloads in app names are XML-escaped before caching, so no live tag pair reaches the reader, and a hostile `PATH` cannot hijack the root collector.
+- **Reader integrity.** Honest sentinels (`NOT_COLLECTED` / `STALE` / `MALFORMED_CACHE` / `IntelApps:None`) and rejection of symlinked, group- or world-writable, or non-root-owned state.
+- **Localization.** Classification reads the architecture field, not the localized "Kind: Intel" string, so it holds across fr / de / ja / tr, including the Turkish dotless-ı.
+- **Installer.** Rejects bad reverse-domains, sub-600-second intervals, non-absolute log paths, and out-of-range parameters, and completes the full install → daemon → `0600` cache → uninstall lifecycle.
+
+Honest limits: the guests are always arm64, so the "Intel" apps are genuine cross-compiled `x86_64` (and one fabricated `i386`) Mach-O binaries, and Rosetta presence is probed by file existence rather than by executing an Intel binary. The classification logic is proven; Rosetta runtime execution is not. Two paths (the `EXTRA_ROOT` and installer EA-delimiter rejections for `;` `<` `>` and newline) are covered by the local unit suite rather than the VM matrix, because the harness cannot deliver those characters as unquoted shell tokens. That is a coverage boundary, not a gap.
+
+### A single real result
+
+One dated run on one Mac (macOS 15.4.1, arm64, Spotlight disabled). One machine, one moment, not a fleet figure:
 
 ```text
 IntelOnly:27;Universal:109;AppleSilicon:28;iOS:6;Other:5;Unknown:0;ScanStatus:Complete;DetectionSource:DirectBundleScan;RosettaRuntimePresent:Yes;Arch:arm64;Scope:/Applications,/Applications/Utilities
@@ -277,7 +297,7 @@ Here `system_profiler` returned an empty application array, so the direct `lipo`
 
 **Which Jamf Pro tiers does it work with?** Any tier that supports script Extension Attributes and policies. It has no dependency on any Jamf add-on.
 
-**Why not just match `IntelOnly:0`?** Because that substring also appears in a `Partial` scan, a `STALE` cache, and a `NOT_COLLECTED` read. A Mac is only trustworthy-migrated under the compound criteria in [Smart Group scoping recipes](#smart-group-scoping-recipes) — `ScanStatus:Complete`, `Unknown:0`, `IntelOnly:0`, and none of the failure sentinels.
+**Why not just match `IntelOnly:0`?** Because that substring also appears in a `Partial` scan and in the cached value a `STALE` read surfaces. A `NOT_COLLECTED` read never contains `IntelOnly:0`, but it has to be excluded as its own failure state as well. A Mac is only trustworthy-migrated under the compound criteria in [Smart Group scoping recipes](#smart-group-scoping-recipes): `ScanStatus:Complete`, `Unknown:0`, `IntelOnly:0`, and none of the failure sentinels.
 
 **Does `RosettaRuntimePresent:Yes` mean an app can run?** No. It is a file-presence signal only (`/Library/Apple/usr/libexec/oah/libRosettaRuntime`). It is not proof Rosetta is installed correctly or that any specific Intel app will launch.
 
@@ -287,7 +307,7 @@ Here `system_profiler` returned an empty application array, so the direct `lipo`
 
 ## Contributing
 
-Pull requests are welcome. Edit the engine ([`intel-app-auditor.zsh`](./intel-app-auditor.zsh)) or the template ([`install.sh.in`](./install.sh.in)) — never the generated `install.sh` — then run [`./build-installer.sh`](./build-installer.sh) to re-embed the engine. Run `zsh test_intel-app-auditor.zsh` before and after any change and keep the suite green (the build-drift guard fails if `install.sh` is out of sync). See the repository [`CONTRIBUTING.md`](../../../CONTRIBUTING.md) for the ground rules on script headers, secrets, and testing.
+Pull requests are welcome. Edit the engine ([`intel-app-auditor.zsh`](./intel-app-auditor.zsh)) or the template ([`install.sh.in`](./install.sh.in)), never the generated `install.sh`, then run [`./build-installer.sh`](./build-installer.sh) to re-embed the engine. Run `zsh test_intel-app-auditor.zsh` before and after any change and keep the suite green (the build-drift guard fails if `install.sh` is out of sync). See the repository [`CONTRIBUTING.md`](../../../CONTRIBUTING.md) for the ground rules on script headers, secrets, and testing.
 
 ## License
 
