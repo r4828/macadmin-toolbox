@@ -636,7 +636,9 @@ xesc() {
 
 # counts_line: the compact summary (VIEW=counts); single source of the counts payload.
 counts_line() {
-  print -r -- "IntelOnly:${AUDIT_INTEL};Universal:${AUDIT_UNI};AppleSilicon:${AUDIT_AS};iOS:${AUDIT_IOS};Other:${AUDIT_OTHER};Unknown:${AUDIT_UNKNOWN};ScanStatus:${AUDIT_STATUS};DetectionSource:${AUDIT_SOURCE};RosettaRuntimePresent:${ROSETTA_STATUS};Arch:${MACHINE_ARCH};Scope:${SCOPE_LABEL}"
+  # Escape SCOPE_LABEL like the app names/paths: EXTRA_ROOT filters ;<> but not &.
+  local scope; scope=$(xesc "$SCOPE_LABEL")
+  print -r -- "IntelOnly:${AUDIT_INTEL};Universal:${AUDIT_UNI};AppleSilicon:${AUDIT_AS};iOS:${AUDIT_IOS};Other:${AUDIT_OTHER};Unknown:${AUDIT_UNKNOWN};ScanStatus:${AUDIT_STATUS};DetectionSource:${AUDIT_SOURCE};RosettaRuntimePresent:${ROSETTA_STATUS};Arch:${MACHINE_ARCH};Scope:${scope}"
 }
 
 # Backward-compatible alias: earlier revisions called this ea_inner.
@@ -752,7 +754,10 @@ main() {
   setopt local_options pipe_fail
 
   # Remove the materialized JXA parser file on any exit or signal.
-  trap '[[ -n ${JXA_PARSER_FILE:-} ]] && command rm -f "$JXA_PARSER_FILE"' EXIT INT TERM
+  trap '[[ -n ${JXA_PARSER_FILE:-} ]] && command rm -f "$JXA_PARSER_FILE"' EXIT
+  # A cleanup-only INT/TERM trap can return 0 and let zsh continue after the signal;
+  # clean up, then exit nonzero so a killed collector actually stops.
+  trap '[[ -n ${JXA_PARSER_FILE:-} ]] && command rm -f "$JXA_PARSER_FILE"; exit 1' INT TERM
 
   # Jamf custom params start at $4; env fallback; safe defaults.
   local p_mode=${4:-} p_scan=${5:-} p_timeout=${6:-} p_root=${7:-}

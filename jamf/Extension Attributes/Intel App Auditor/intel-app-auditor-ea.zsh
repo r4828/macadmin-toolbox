@@ -76,29 +76,31 @@ _iaa_read() {
     local view="$1" threshold=28800 interval mtime now age body last
     case "$view" in counts|apps|both) ;; *) view=both ;; esac
 
-    # install.sh records the configured interval; stale = 2x that when present.
-    if [[ -r "$_iaa_state_dir/interval" ]]; then
-        interval="$("$CAT" "$_iaa_state_dir/interval" 2>/dev/null)"
-        if [[ "$interval" == <-> ]] && (( interval >= 600 )); then
-            threshold=$(( interval * 2 ))
-        fi
-    fi
-
     if [[ ! -f "$_iaa_state_file" ]]; then
         printf '<result>NOT_COLLECTED</result>\n'; return 0
     fi
+
+    # Reject an unsafe state path (symlink / writable / not root-owned) BEFORE any read,
+    # so a compromised dir can't feed us a FIFO/device to hang recon on.
+    if ! _iaa_state_path_safe "$_iaa_state_dir" || ! _iaa_state_path_safe "$_iaa_state_file"; then
+        printf '<result>MALFORMED_CACHE</result>\n'; return 0
+    fi
+
     mtime="$("$STAT" -f '%m' "$_iaa_state_file" 2>/dev/null)"
     if [[ -z "$mtime" ]]; then
         printf '<result>NOT_COLLECTED</result>\n'; return 0
     fi
-
     now="$("$DATE" +%s)"
     age=$(( now - mtime ))
     (( age < 0 )) && age=0
 
-    # Reject an unsafe state path (symlink / writable / not root-owned) before reading it.
-    if ! _iaa_state_path_safe "$_iaa_state_dir" || ! _iaa_state_path_safe "$_iaa_state_file"; then
-        printf '<result>MALFORMED_CACHE</result>\n'; return 0
+    # install.sh records the configured interval; stale = 2x that. Read it only now that
+    # the dir is validated safe, and only from a real regular file (never a FIFO/symlink).
+    if [[ -f "$_iaa_state_dir/interval" && ! -L "$_iaa_state_dir/interval" ]]; then
+        interval="$("$CAT" "$_iaa_state_dir/interval" 2>/dev/null)"
+        if [[ "$interval" == <-> ]] && (( interval >= 600 )); then
+            threshold=$(( interval * 2 ))
+        fi
     fi
 
     # Validate the whole cache before slicing; MALFORMED_CACHE dominates staleness.
