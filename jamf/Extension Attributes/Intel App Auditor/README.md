@@ -9,7 +9,7 @@ Answer one fleet question ahead of Rosetta 2's removal: **which Macs still have 
 
 Classification is on the machine field `arch_kind` from `system_profiler -json SPApplicationsDataType` (never the localized "Kind: Intel" text), cross-checked against an independent `lipo`-based direct bundle scan. A broken or omission-prone inventory degrades to `ScanStatus:Partial`. It never reports a false clean zero.
 
-> Where it fits: the collector tells you which Macs still run Intel-only apps and which apps they are, so you can plan replacement, repackaging, or retirement for the machines that need it. Once a Mac reports `ScanStatus:Complete` with `IntelOnly:0`, a Smart Group built on those values is your record that it's Rosetta-free ahead of Rosetta 2's removal. It runs on any Jamf Pro tier with no external dependencies: just the Jamf binary you already have and one small launchd-scheduled collector.
+> Where it fits: the collector tells you which Macs still run Intel-only apps and which apps they are, so you can plan replacement, repackaging, or retirement for the machines that need it. Once a Mac reports `ScanStatus:Complete` with `IntelOnly:0`, a Smart Group built on those values is your record that it has no remaining Intel-only apps ahead of Rosetta 2's removal (a separate question from whether the Rosetta 2 runtime is still installed, which `RosettaRuntimePresent` reports on its own). It runs on any Jamf Pro tier with no external dependencies: just the Jamf binary you already have and one small launchd-scheduled collector.
 
 ## Table of contents
 
@@ -201,7 +201,7 @@ The scan runs two engines (the `system_profiler` primary and the direct `lipo` d
 | --- | --- |
 | `NOT_COLLECTED` | No state file yet, or its mtime is unreadable (collector installed moments ago, or this Mac is out of scope for the install policy). |
 | `STALE (collector has not run in <n>s, threshold <t>s; last collected: <time>). Cached value follows:\n<value>` | The state file is older than 2× the configured interval. The last-known-good value (sliced to the same view) is still surfaced beneath the flag. |
-| `MALFORMED_CACHE` | The `apps` view found a cache that exists but has no recognizable app-list section (counts-only, truncated, or an older/foreign format). Returned instead of a reassuring `IntelApps:None`, so a corrupt cache can never masquerade as a migrated Mac. |
+| `MALFORMED_CACHE` | The reader found a cache that fails full-format validation (a counts-only or an older/foreign format), returned for whichever view was requested because validation runs before the view is sliced. A valid `TRUNCATED:` marker is not malformed. Returned instead of a reassuring `IntelApps:None`, so a corrupt cache can never masquerade as a migrated Mac. |
 | `TRUNCATED: <n> Intel-only app(s) omitted...` | The `apps` list hit the 24000-char cap; the remaining `<n>` Intel-only apps are counted but not listed. The `counts` view still reports the full `IntelOnly:` total. |
 | `IntelApps:None` | Reserved for a **validated** result: the collector wrote this marker because the machine genuinely has zero Intel-only apps. |
 
@@ -217,7 +217,7 @@ Assumes an EA named **Intel App Auditor**. Count- and status-based criteria need
 | **Needs attention / untrustworthy read** | `Intel App Auditor` `like` `ScanStatus:Partial` **or** `like` `STALE` **or** `is` `NOT_COLLECTED` **or** `like` `MALFORMED_CACHE` |
 | **Rosetta runtime present** | `Intel App Auditor` `like` `RosettaRuntimePresent:Yes` |
 
-> **Never smart-group "migrated" on `IntelOnly:0` alone.** `IntelOnly:0` also appears in a `Partial` scan, a stale cache, and every other view that happens to contain the substring. A Mac is only trustworthy-migrated when it is **not** `NOT_COLLECTED`, **not** `STALE`, **not** `MALFORMED_CACHE`, is `ScanStatus:Complete`, has `Unknown:0`, and has `IntelOnly:0`; hence the compound criteria above. Build the "still has Intel apps" group as the compound-inverse (any of the untrustworthy states, or `IntelOnly` matching `[1-9]`), so a degraded read never lands in either clean bucket by accident.
+> **Never smart-group "migrated" on `IntelOnly:0` alone.** `IntelOnly:0` also appears in a `Partial` scan, a stale cache, and every other view that happens to contain the substring. A Mac is only trustworthy-migrated when it is **not** `NOT_COLLECTED`, **not** `STALE`, **not** `MALFORMED_CACHE`, is `ScanStatus:Complete`, has `Unknown:0`, and has `IntelOnly:0`; hence the compound criteria above. The "still has Intel apps" row above matches `IntelOnly:[1-9]`; route the untrustworthy states (`NOT_COLLECTED`, `STALE`, `MALFORMED_CACHE`, `ScanStatus:Partial`) to the separate "needs attention" group, so a degraded read never lands in either clean bucket by accident.
 
 ## Detection details
 
@@ -297,7 +297,7 @@ Here `system_profiler` returned an empty application array, so the direct `lipo`
 
 **Which Jamf Pro tiers does it work with?** Any tier that supports script Extension Attributes and policies. It has no dependency on any Jamf add-on.
 
-**Why not just match `IntelOnly:0`?** Because that substring also appears in a `Partial` scan, a `STALE` cache, and a `NOT_COLLECTED` read. A Mac is only trustworthy-migrated under the compound criteria in [Smart Group scoping recipes](#smart-group-scoping-recipes): `ScanStatus:Complete`, `Unknown:0`, `IntelOnly:0`, and none of the failure sentinels.
+**Why not just match `IntelOnly:0`?** Because that substring also appears in a `Partial` scan and in the cached value a `STALE` read surfaces. A `NOT_COLLECTED` read never contains `IntelOnly:0`, but it has to be excluded as its own failure state as well. A Mac is only trustworthy-migrated under the compound criteria in [Smart Group scoping recipes](#smart-group-scoping-recipes): `ScanStatus:Complete`, `Unknown:0`, `IntelOnly:0`, and none of the failure sentinels.
 
 **Does `RosettaRuntimePresent:Yes` mean an app can run?** No. It is a file-presence signal only (`/Library/Apple/usr/libexec/oah/libRosettaRuntime`). It is not proof Rosetta is installed correctly or that any specific Intel app will launch.
 
