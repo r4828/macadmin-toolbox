@@ -10,25 +10,10 @@
 # Tested on:   macOS 15.4.1 (live, 24E263, arm64) + macOS 15 Sequoia (Tart VM)
 # Author:      Robert Flanagan (@r4828)
 #
-# ===========================================================================
-# ONE reader, three trigger words. Each trigger word calls one mode, and every
-# mode is a single <result> value, so every mode is usable as Smart Group
-# criteria. The heavy system_profiler scan runs only once, in the background
-# collector; each trigger just slices the same cached file.
-#
-#   counts   summary line only  -> IntelOnly:0, ScanStatus:Partial,
-#                                  RosettaRuntimePresent:Yes, Arch:x86_64, ...
-#   apps     Intel-only app list (name + path), or IntelApps:None
-#                                  -> match a specific app by name/path
-#   both     summary line, then the app list                       (default)
-#
-# HOW TO PICK A MODE
-#   * As a Jamf EA (no arguments): keep exactly ONE of the three trigger lines
-#     at the very bottom of this file; comment out the other two. Whichever
-#     word is left uncommented is the mode this EA reports.
-#   * From the command line / testing: pass the trigger word as the first
-#     argument, e.g.  intel-app-auditor-ea.zsh counts
-# ===========================================================================
+# One reader, three trigger words (counts = summary; apps = Intel-only list or
+# IntelApps:None; both = default), each a single <result> usable as Smart Group
+# criteria. The heavy scan runs once in the collector; each mode slices the cache.
+# As a Jamf EA keep exactly ONE trigger line uncommented; from the CLI pass the word.
 
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 
@@ -43,14 +28,10 @@ HEAD=/usr/bin/head
 _iaa_state_dir="$INTEL_STATE_DIR"
 _iaa_state_file="$_iaa_state_dir/result.txt"
 
-# _iaa_state_path_safe <path>: refuse to trust a state dir/file that is not what
-# the collector's root-only guarantee promises. Rejects a symlink (an attacker
-# redirecting the trust path), a group- or world-writable node (someone else can
-# rewrite the cache), and -- when the reader itself runs as root at recon -- a
-# node not owned by root. Returns 0 when safe (publication finding 12).
+# _iaa_state_path_safe <path>: reject a state node that breaks the collector's root-only
+# guarantee -- a symlink, group/world-writable, or (when root) not root-owned. 0 when safe.
 _iaa_state_path_safe() {
-    emulate -L zsh   # pin 1-based scalar subscripting; /etc/zshenv (sourced even
-                     # under --no-rcs) could set KSH_ARRAYS and skew perm[6]/perm[9]
+    emulate -L zsh   # /etc/zshenv could set KSH_ARRAYS and skew perm[6]/perm[9]
     local p="$1" perm owner
     [[ -L "$p" ]] && return 1
     perm="$("$STAT" -f '%Sp' "$p" 2>/dev/null)" || return 1
@@ -63,19 +44,10 @@ _iaa_state_path_safe() {
     return 0
 }
 
-# _iaa_validate_cache <file>: prove the WHOLE cache is a well-formed collector
-# payload BEFORE any view is sliced from it. A cache is valid only when it has
-#   1. a line-1 counts summary with the six numeric class counts and a
-#      ScanStatus of Complete or Partial, AND
-#   2. an app-list section: one or more `INTEL_APP |` lines, the literal
-#      `IntelApps:None` marker, or a `TRUNCATED:` line, AND
-#   3. count/list agreement -- the IntelOnly count equals the number of
-#      INTEL_APP lines (IntelApps:None requires IntelOnly:0; a TRUNCATED cache
-#      is exempt from the exact equality because it intentionally omits lines).
-# Returns 0 when valid, non-zero otherwise. This is the fix for publication
-# finding 1: a counts-only, empty, truncated-header-only, duplicated, invalid-
-# numeric, or mismatched-count cache must NOT be able to masquerade as a clean
-# validated result in ANY view -- not just `apps`.
+# _iaa_validate_cache <file>: prove the whole cache is well-formed before any view is
+# sliced -- (1) a line-1 counts summary, (2) an app-list section, (3) count/list agreement
+# (IntelOnly count == INTEL_APP lines; IntelApps:None requires 0; TRUNCATED exempt). So a
+# malformed cache can't masquerade as a clean result in any view.
 _iaa_validate_cache() {
     local file="$1" first icount napps
     first="$("$HEAD" -n 1 "$file" 2>/dev/null)"
@@ -98,11 +70,8 @@ _iaa_validate_cache() {
     return 0
 }
 
-# _iaa_read <counts|apps|both>: stat the cached state file, VALIDATE the whole
-# cache, then slice it to the requested view, apply the NOT_COLLECTED / STALE /
-# MALFORMED_CACHE sentinels, and print exactly one <result> value. This is the
-# whole reader; the trigger words below are one-line wrappers so each mode has
-# its own name.
+# _iaa_read <counts|apps|both>: stat + validate the cache, slice to the view, apply the
+# NOT_COLLECTED / STALE / MALFORMED_CACHE sentinels, print one <result>.
 _iaa_read() {
     local view="$1" threshold=28800 interval mtime now age body last
     case "$view" in counts|apps|both) ;; *) view=both ;; esac
@@ -127,26 +96,17 @@ _iaa_read() {
     age=$(( now - mtime ))
     (( age < 0 )) && age=0
 
-    # Reject an unsafe state path (symlink / group- or world-writable / not root-
-    # owned when we are root) before reading its contents. A path someone else can
-    # rewrite is not a cache we can certify (publication finding 12).
+    # Reject an unsafe state path (symlink / writable / not root-owned) before reading it.
     if ! _iaa_state_path_safe "$_iaa_state_dir" || ! _iaa_state_path_safe "$_iaa_state_file"; then
         printf '<result>MALFORMED_CACHE</result>\n'; return 0
     fi
 
-    # Validate the ENTIRE cache before slicing ANY view. A counts-only, empty,
-    # truncated-header, invalid-numeric, or mismatched-count/list cache is not a
-    # trustworthy state in any view -- return MALFORMED_CACHE and stop, so a
-    # corrupt cache can never masquerade as a clean migrated Mac in counts, apps,
-    # or both (publication finding 1). MALFORMED_CACHE dominates staleness.
+    # Validate the whole cache before slicing; MALFORMED_CACHE dominates staleness.
     if ! _iaa_validate_cache "$_iaa_state_file"; then
         printf '<result>MALFORMED_CACHE</result>\n'; return 0
     fi
 
-    # The cache is validated. Slice the body to the requested view.
-    #   counts -> line 1 (the summary)
-    #   apps   -> the INTEL_APP / IntelApps:None / TRUNCATED lines
-    #   both   -> the whole file
+    # Cache validated; slice to the view (counts = line 1, apps = list lines, both = whole file).
     case "$view" in
         counts) body="$("$CAT" "$_iaa_state_file" 2>/dev/null | "$HEAD" -n 1)" ;;
         apps)   body="$("$CAT" "$_iaa_state_file" 2>/dev/null | "$GREP" -E '^(INTEL_APP \||IntelApps:None|TRUNCATED:)')" ;;
@@ -170,16 +130,13 @@ counts() { _iaa_read counts; }
 apps()   { _iaa_read apps; }
 both()   { _iaa_read both; }
 
-# A trigger word passed as the first argument wins (command line / testing) and
-# short-circuits the fixed EA trigger below.
+# A trigger word as the first argument wins (CLI/testing); short-circuits the EA trigger.
 case "${1:-}" in
     counts|apps|both) "$1"; exit 0 ;;
 esac
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Jamf EA trigger: keep exactly ONE of these three words uncommented. That word
 # is the mode this EA reports. (Two uncommented => two <result> lines => invalid.)
-# ─────────────────────────────────────────────────────────────────────────────
 both
 # counts
 # apps
