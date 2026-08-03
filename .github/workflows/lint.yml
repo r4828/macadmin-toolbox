@@ -41,12 +41,15 @@ jobs:
           persist-credentials: false
 
       - name: Check MIT attribution headers
+        id: run
         # pipefail: tee would otherwise swallow the tool's exit status.
         shell: bash
         run: bash tools/check-license-headers.sh 2>&1 | tee /tmp/license.txt
 
       - name: Publish summary
         if: always()
+        env:
+          OUTCOME: ${{ steps.run.outcome }}
         run: |
           set -uo pipefail
           {
@@ -56,6 +59,22 @@ jobs:
 
           if [ ! -f /tmp/license.txt ]; then
             echo "The check did not run; no output to report." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # The step outcome is consulted before the file contents, because a
+          # checker that aborted -- deleted, or broken by a syntax error --
+          # still leaves a tee'd file behind without ever printing FAILED. On
+          # contents alone that reads as a pass over a red step.
+          if [ "${OUTCOME:-}" != success ] && ! grep -q 'FAILED' /tmp/license.txt; then
+            {
+              echo "**The check did not complete.** It exited without reporting a"
+              echo "verdict, so this is not a pass. See the step log."
+              echo
+              echo '```'
+              tail -20 /tmp/license.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
@@ -74,8 +93,16 @@ jobs:
               # file: the `$` is a regex end-anchor and the backticks are
               # Markdown code-span syntax for the table cell. Neither is meant
               # to expand, which is exactly why they are single-quoted.
+              #
+              # Split to tab-separated first, then emit the row, so a literal
+              # `|` in either half can be escaped. An unescaped pipe in cell
+              # text is read as a column separator and silently shears the
+              # table apart from that row onward.
               # shellcheck disable=SC2016
-              sed -n 's/^  \([^:]*\):\(.*\)$/| `\1` |\2 |/p' /tmp/license.txt
+              sed -n 's/^  \([^:]*\):\(.*\)$/\1\t\2/p' /tmp/license.txt \
+                | while IFS="$(printf '\t')" read -r _f _msg; do
+                    printf '| `%s` | %s |\n' "${_f//|/\\|}" "${_msg//|/\\|}"
+                  done
             } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "**Passed.** Every script and document carries an MIT attribution header." >> "$GITHUB_STEP_SUMMARY"
@@ -227,7 +254,7 @@ jobs:
               echo "| File | Line | Level | Code | Message |"
               echo "|---|---:|---|---|---|"
               jq -r '.comments[]
-                | "| `\(.file)` | \(.line) | \(.level) | [SC\(.code)](https://www.shellcheck.net/wiki/SC\(.code)) | \(.message) |"' \
+                | "| `\(.file | gsub("\\|"; "\\|"))` | \(.line) | \(.level) | [SC\(.code)](https://www.shellcheck.net/wiki/SC\(.code)) | \(.message | gsub("\\|"; "\\|")) |"' \
                 /tmp/shellcheck.json
             } >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -275,6 +302,7 @@ jobs:
         if: always()
         env:
           CHECKED: ${{ steps.run.outputs.checked }}
+          OUTCOME: ${{ steps.run.outcome }}
         run: |
           set -uo pipefail
           {
@@ -291,13 +319,22 @@ jobs:
               echo "| File | Error |"
               echo "|---|---|"
               while IFS=$'\t' read -r f err; do
-                # Backticks are Markdown, not command substitution.
+                # Backticks are Markdown, not command substitution. The pipe
+                # substitution matters: a zsh diagnostic about a pipeline
+                # contains a literal `|`, which Markdown reads as a column
+                # separator and which would shear the table apart.
                 # shellcheck disable=SC2016
-                printf '| `%s` | %s |\n' "$f" "$err"
+                printf '| `%s` | %s |\n' "${f//|/\\|}" "${err//|/\\|}"
               done < /tmp/zsh-failures.tsv
             } >> "$GITHUB_STEP_SUMMARY"
-          else
+          elif [ "${OUTCOME:-}" = success ]; then
             echo "**No syntax errors.**" >> "$GITHUB_STEP_SUMMARY"
+          else
+            # Red, but nothing parsed into the failures file. That is what the
+            # minimum-count guard tripping looks like, and what a failed zsh
+            # install looks like. Claiming "no syntax errors" over either would
+            # contradict the job's own status.
+            echo "**The job did not complete.** No per-file syntax error was recorded, so the failure was in the check itself -- most likely the minimum-file guard. See the step log." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   markdownlint:
@@ -361,8 +398,17 @@ jobs:
               echo "|---|---:|---|---|"
               # Regex anchor and Markdown backticks, not expansions.
               # shellcheck disable=SC2016
+              # Split on tabs first, then emit, so a literal `|` in the
+              # detail can be escaped. markdownlint reports table violations by
+              # quoting the offending row, so that text routinely contains
+              # pipes -- unescaped they are read as column separators and the
+              # table shears apart exactly where the finding is.
               grep -E '^[^:]+:[0-9]+' /tmp/markdownlint.txt \
-                | sed -E 's|^([^:]+):([0-9]+)(:[0-9]+)? +([A-Z]+[0-9]+[^ ]*) +(.*)$|\| `\1` \| \2 \| \4 \| \5 \||'
+                | sed -E 's|^([^:]+):([0-9]+)(:[0-9]+)? +([A-Z]+[0-9]+[^ ]*) +(.*)$|\1\t\2\t\4\t\5|' \
+                | while IFS="$(printf '\t')" read -r _f _l _rule _detail; do
+                    printf '| `%s` | %s | %s | %s |\n' \
+                      "${_f//|/\\|}" "$_l" "$_rule" "${_detail//|/\\|}"
+                  done
             } >> "$GITHUB_STEP_SUMMARY"
           elif [ "${OUTCOME:-}" = "success" ]; then
             echo "**No findings.**" >> "$GITHUB_STEP_SUMMARY"
