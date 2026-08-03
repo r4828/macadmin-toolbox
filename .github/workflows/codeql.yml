@@ -1,0 +1,51 @@
+name: CodeQL
+
+# `languages: actions` only, and that is the whole story rather than an
+# oversight.
+#
+# GitHub reports this repository as 100% Shell, and CodeQL has no shell or bash
+# analyser -- its supported set is C/C++, C#, Go, Java/Kotlin, JavaScript/
+# TypeScript, Python, Ruby, Rust, Swift, and GitHub Actions. Asking it to scan
+# the scripts here would find nothing to parse.
+#
+# What it can analyse is the workflows themselves: `.github/workflows/*.yml` and
+# any `action.yml`. That is a real surface on a public repository, where a fork
+# pull request is untrusted input, and it is free here because the repository is
+# public. If Swift, Python or Go ever lands in this repo, add it to the matrix.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, so a newly published query reaches this repository without
+    # waiting for someone to push.
+    - cron: '31 4 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze workflows
+    runs-on: ubuntu-latest
+    permissions:
+      # Writing results into the Security tab is the point of the job.
+      security-events: write
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@18420e3271f74589575af831a523c833acda327f # codeql-bundle-v2.26.2
+        with:
+          languages: actions
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@18420e3271f74589575af831a523c833acda327f # codeql-bundle-v2.26.2
+        with:
+          category: "/language:actions"

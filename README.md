@@ -3,6 +3,10 @@
 
 # macadmin-toolbox
 
+[![Lint](https://github.com/r4828/macadmin-toolbox/actions/workflows/lint.yml/badge.svg)](https://github.com/r4828/macadmin-toolbox/actions/workflows/lint.yml)
+[![CodeQL](https://github.com/r4828/macadmin-toolbox/actions/workflows/codeql.yml/badge.svg)](https://github.com/r4828/macadmin-toolbox/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/r4828/macadmin-toolbox/badge)](https://scorecard.dev/viewer/?uri=github.com/r4828/macadmin-toolbox)
+
 Scripts, configuration profiles, and other odds and ends I've built for managing Macs with Jamf Pro and other MDMs. They're here so other Mac admins can use them, break them, fix them, and send the fixes back.
 
 Everything is MIT licensed. Use it in your own environment, fold it into your own repo, build a product on top of it. The one thing I ask is that you keep the copyright and license notice, which is all the MIT license requires anyway.
