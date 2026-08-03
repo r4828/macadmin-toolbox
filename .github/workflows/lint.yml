@@ -1,6 +1,13 @@
 name: Lint
 
-# Every job in this file publishes a job summary to $GITHUB_STEP_SUMMARY.
+# Every job in this file publishes a job summary to $GITHUB_STEP_SUMMARY, and on
+# a pull request the four summaries are assembled into a single comment that is
+# edited in place on each push rather than added to.
+#
+# That is why each job writes its section twice -- `tee -a "$CI_REPORT"`
+# alongside the summary redirect. $GITHUB_STEP_SUMMARY is a different file for
+# every step, so nothing later in the job can read it back and another job
+# cannot read it at all; the section travels between jobs as an artifact.
 #
 # The reason is that a red or green dot on the run page says only that
 # something failed, not what. Reading a finding meant opening the run, picking
@@ -35,10 +42,16 @@ jobs:
   license-headers:
     name: License headers
     runs-on: ubuntu-latest
+    env:
+      CI_REPORT: ${{ github.workspace }}/ci-report.md
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+
+      - name: Start a fresh report
+        run: |
+          : > "$CI_REPORT"
 
       - name: Check MIT attribution headers
         id: run
@@ -55,10 +68,10 @@ jobs:
           {
             echo "## License headers"
             echo
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$CI_REPORT" >> "$GITHUB_STEP_SUMMARY"
 
           if [ ! -f /tmp/license.txt ]; then
-            echo "The check did not run; no output to report." >> "$GITHUB_STEP_SUMMARY"
+            echo "The check did not run; no output to report." | tee -a "$CI_REPORT" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
@@ -74,7 +87,7 @@ jobs:
               echo '```'
               tail -20 /tmp/license.txt
               echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
+            } | tee -a "$CI_REPORT" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
@@ -103,18 +116,33 @@ jobs:
                 | while IFS="$(printf '\t')" read -r _f _msg; do
                     printf '| `%s` | %s |\n' "${_f//|/\\|}" "${_msg//|/\\|}"
                   done
-            } >> "$GITHUB_STEP_SUMMARY"
+            } | tee -a "$CI_REPORT" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "**Passed.** Every script and document carries an MIT attribution header." >> "$GITHUB_STEP_SUMMARY"
+            echo "**Passed.** Every script and document carries an MIT attribution header." | tee -a "$CI_REPORT" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: Upload this job's report section
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-report-${{ github.job }}
+          path: ci-report.md
+          if-no-files-found: ignore
+          retention-days: 7
 
   shellcheck:
     name: ShellCheck
     runs-on: ubuntu-latest
+    env:
+      CI_REPORT: ${{ github.workspace }}/ci-report.md
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+
+      - name: Start a fresh report
+        run: |
+          : > "$CI_REPORT"
 
       # A pinned release binary rather than the marketplace action or
       # `apt-get install shellcheck`, for two separate reasons.
@@ -226,10 +254,10 @@ jobs:
               echo "> Any table below is therefore a partial result, not the whole scan."
               echo
             fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$CI_REPORT" >> "$GITHUB_STEP_SUMMARY"
 
           if [ ! -s /tmp/shellcheck.json ]; then
-            echo "No machine-readable output was produced; see the step log." >> "$GITHUB_STEP_SUMMARY"
+            echo "No machine-readable output was produced; see the step log." | tee -a "$CI_REPORT" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
@@ -241,12 +269,12 @@ jobs:
             # and this summary still cheerfully reported "no findings" -- a
             # summary that contradicts a red job is worse than no summary.
             if [ "${OUTCOME:-}" = "success" ]; then
-              echo "**No findings.**" >> "$GITHUB_STEP_SUMMARY"
+              echo "**No findings.**" | tee -a "$CI_REPORT" >> "$GITHUB_STEP_SUMMARY"
             else
-              echo "**ShellCheck did not complete.** It reported no findings because it failed to run, not because the scripts are clean. See the step log." >> "$GITHUB_STEP_SUMMARY"
+              echo "**ShellCheck did not complete.** It reported no findings because it failed to run, not because the scripts are clean. See the step log." | tee -a "$CI_REPORT" >> "$GITHUB_STEP_SUMMARY"
             fi
           elif [ "$findings" = "unknown" ]; then
-            echo "Output was not valid JSON; see the step log." >> "$GITHUB_STEP_SUMMARY"
+            echo "Output was not valid JSON; see the step log." | tee -a "$CI_REPORT" >> "$GITHUB_STEP_SUMMARY"
           else
             {
               echo "**${findings} finding(s).**"
@@ -256,16 +284,31 @@ jobs:
               jq -r '.comments[]
                 | "| `\(.file | gsub("\\|"; "\\|"))` | \(.line) | \(.level) | [SC\(.code)](https://www.shellcheck.net/wiki/SC\(.code)) | \(.message | gsub("\\|"; "\\|")) |"' \
                 /tmp/shellcheck.json
-            } >> "$GITHUB_STEP_SUMMARY"
+            } | tee -a "$CI_REPORT" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: Upload this job's report section
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-report-${{ github.job }}
+          path: ci-report.md
+          if-no-files-found: ignore
+          retention-days: 7
 
   zsh-syntax:
     name: zsh syntax
     runs-on: ubuntu-latest
+    env:
+      CI_REPORT: ${{ github.workspace }}/ci-report.md
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+
+      - name: Start a fresh report
+        run: |
+          : > "$CI_REPORT"
 
       - name: Install zsh
         run: sudo apt-get update && sudo apt-get install -y zsh
@@ -310,7 +353,7 @@ jobs:
             echo
             echo "\`zsh -n\` over ${CHECKED:-0} script(s)."
             echo
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$CI_REPORT" >> "$GITHUB_STEP_SUMMARY"
 
           if [ -s /tmp/zsh-failures.tsv ]; then
             {
@@ -326,24 +369,39 @@ jobs:
                 # shellcheck disable=SC2016
                 printf '| `%s` | %s |\n' "${f//|/\\|}" "${err//|/\\|}"
               done < /tmp/zsh-failures.tsv
-            } >> "$GITHUB_STEP_SUMMARY"
+            } | tee -a "$CI_REPORT" >> "$GITHUB_STEP_SUMMARY"
           elif [ "${OUTCOME:-}" = success ]; then
-            echo "**No syntax errors.**" >> "$GITHUB_STEP_SUMMARY"
+            echo "**No syntax errors.**" | tee -a "$CI_REPORT" >> "$GITHUB_STEP_SUMMARY"
           else
             # Red, but nothing parsed into the failures file. That is what the
             # minimum-count guard tripping looks like, and what a failed zsh
             # install looks like. Claiming "no syntax errors" over either would
             # contradict the job's own status.
-            echo "**The job did not complete.** No per-file syntax error was recorded, so the failure was in the check itself -- most likely the minimum-file guard. See the step log." >> "$GITHUB_STEP_SUMMARY"
+            echo "**The job did not complete.** No per-file syntax error was recorded, so the failure was in the check itself -- most likely the minimum-file guard. See the step log." | tee -a "$CI_REPORT" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: Upload this job's report section
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-report-${{ github.job }}
+          path: ci-report.md
+          if-no-files-found: ignore
+          retention-days: 7
 
   markdownlint:
     name: Markdown
     runs-on: ubuntu-latest
+    env:
+      CI_REPORT: ${{ github.workspace }}/ci-report.md
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+
+      - name: Start a fresh report
+        run: |
+          : > "$CI_REPORT"
 
       # Run the CLI directly, pinned, rather than through the marketplace
       # action: the action's floating major tag is mutable, and its output is
@@ -381,10 +439,10 @@ jobs:
             echo
             echo "markdownlint-cli2 0.23.2 over ${CHECKED:-0} file(s)."
             echo
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$CI_REPORT" >> "$GITHUB_STEP_SUMMARY"
 
           if [ ! -f /tmp/markdownlint.txt ]; then
-            echo "The check did not run; no output to report." >> "$GITHUB_STEP_SUMMARY"
+            echo "The check did not run; no output to report." | tee -a "$CI_REPORT" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
@@ -409,11 +467,97 @@ jobs:
                     printf '| `%s` | %s | %s | %s |\n' \
                       "${_f//|/\\|}" "$_l" "$_rule" "${_detail//|/\\|}"
                   done
-            } >> "$GITHUB_STEP_SUMMARY"
+            } | tee -a "$CI_REPORT" >> "$GITHUB_STEP_SUMMARY"
           elif [ "${OUTCOME:-}" = "success" ]; then
-            echo "**No findings.**" >> "$GITHUB_STEP_SUMMARY"
+            echo "**No findings.**" | tee -a "$CI_REPORT" >> "$GITHUB_STEP_SUMMARY"
           else
             # Same ambiguity as the ShellCheck job: no parseable findings is
             # also what an npx that never installed the linter looks like.
-            echo "**The linter did not complete.** No findings were parsed because it failed to run. See the step log." >> "$GITHUB_STEP_SUMMARY"
+            echo "**The linter did not complete.** No findings were parsed because it failed to run. See the step log." | tee -a "$CI_REPORT" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: Upload this job's report section
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-report-${{ github.job }}
+          path: ci-report.md
+          if-no-files-found: ignore
+          retention-days: 7
+
+  pr-comment:
+    name: Post the report to the pull request
+    # `needs` is ordering here, not agreement. `always()` runs this whatever the
+    # four checks concluded, and `continue-on-error` keeps its own result out of
+    # the verdict: a comment that cannot be posted is a worse report, not a
+    # failed build. Branch protection should require the check jobs above and
+    # never this one.
+    #
+    # This repository is public, so the head-repository test is load-bearing
+    # rather than defensive: a fork's token is read-only by design, and without
+    # the test every outside contribution would show a failing job, which reads
+    # as a broken pipeline rather than the policy it is.
+    needs: [license-headers, shellcheck, zsh-syntax, markdownlint]
+    if: >-
+      always() && github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # A job that failed before its upload step leaves no artifact, so a
+      # missing section is normal and must not stop the report.
+      - name: Collect the report sections
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: ci-report-*
+          path: sections
+
+      - name: Assemble and post the report
+        env:
+          # The verdict is built from what the jobs concluded, not from a second
+          # reading of their output, so the table cannot disagree with the run.
+          NEEDS: ${{ toJSON(needs) }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p sections
+          report="$RUNNER_TEMP/report.md"
+
+          total=$(printf '%s' "$NEEDS" | jq 'length')
+          failed=$(printf '%s' "$NEEDS" | jq '[to_entries[] | select(.value.result != "success")] | length')
+          {
+            echo "# Lint results"
+            echo
+            if [ "$failed" -gt 0 ]; then
+              echo "**Failed** — ${failed} of ${total} jobs did not pass."
+            else
+              echo "**Passed** — all ${total} jobs green."
+            fi
+            echo
+            echo "| Job | Result |"
+            echo "|---|---|"
+            printf '%s' "$NEEDS" | jq -r 'to_entries[]
+              | "| \(.key) | \(if .value.result == "success" then "✅ passed" else "❌ " + .value.result end) |"'
+            echo
+          } > "$report"
+
+          # Sorted, because artifact download order is not guaranteed and a
+          # comment whose sections reshuffle between runs is hard to read.
+          find sections -name 'ci-report.md' -print0 \
+            | sort -z \
+            | while IFS= read -r -d '' section; do
+                cat "$section" >> "$report"
+                echo >> "$report"
+              done
+
+          bash .github/scripts/pr_comment.sh "$report"
