@@ -1,5 +1,28 @@
 name: Lint
 
+# Every job in this file publishes a job summary to $GITHUB_STEP_SUMMARY.
+#
+# The reason is that a red or green dot on the run page says only that
+# something failed, not what. Reading a finding meant opening the run, picking
+# the job, expanding the step and scrolling its log. The summary puts the
+# findings themselves on the run page, so the common case -- "what broke?" --
+# is answered without a single click.
+#
+# Two conventions hold throughout, and both matter:
+#
+#   1. Rendering lives in a separate step marked `if: always()`, never appended
+#      to the checking step. GitHub runs steps as `bash -e {0}`, so a linter
+#      exiting non-zero ends its step immediately; anything written after the
+#      tool call would be skipped on exactly the runs worth summarising. The
+#      checking step is allowed to fail, and the renderer reads what it left
+#      behind.
+#
+#   2. Every job that iterates over files carries a floor on how many it
+#      expected to find. A glob that stops matching -- a rename, a directory
+#      move -- otherwise produces a job that passes having checked nothing,
+#      which is indistinguishable from a job that passed having checked
+#      everything.
+
 on:
   push:
     branches: [main]
@@ -16,8 +39,45 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
       - name: Check MIT attribution headers
-        run: bash tools/check-license-headers.sh
+        run: bash tools/check-license-headers.sh 2>&1 | tee /tmp/license.txt
+
+      - name: Publish summary
+        if: always()
+        run: |
+          set -uo pipefail
+          {
+            echo "## License headers"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ ! -f /tmp/license.txt ]; then
+            echo "The check did not run; no output to report." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if grep -q 'FAILED' /tmp/license.txt; then
+            {
+              echo "**Failed.** These files need an MIT attribution header:"
+              echo
+              echo "| File | Missing |"
+              echo "|---|---|"
+              # The path is matched as [^:]* rather than .* on purpose: the
+              # message half contains a colon of its own, in
+              # "[missing SPDX-License-Identifier: MIT]", and a greedy match
+              # would split the line on that instead of on the path separator.
+              #
+              # SC2016 is a false positive on every sed and printf in this
+              # file: the `$` is a regex end-anchor and the backticks are
+              # Markdown code-span syntax for the table cell. Neither is meant
+              # to expand, which is exactly why they are single-quoted.
+              # shellcheck disable=SC2016
+              sed -n 's/^  \([^:]*\):\(.*\)$/| `\1` |\2 |/p' /tmp/license.txt
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "**Passed.** Every script and document carries an MIT attribution header." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   shellcheck:
     name: ShellCheck
@@ -26,16 +86,112 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Run ShellCheck
-        uses: ludeeus/action-shellcheck@2.0.0
-        with:
-          severity: warning
-          # ShellCheck has no zsh mode (SC1071); zsh scripts are covered by
-          # the zsh-syntax job below.
-          ignore_names: "*.zsh"
+
+      # A pinned release binary rather than the marketplace action or
+      # `apt-get install shellcheck`, for two separate reasons.
+      #
+      # Pinning: Ubuntu ships an older build, and shellcheck RENUMBERS findings
+      # between versions -- the unreachable-function check is SC2317 in the
+      # packaged build and SC2329 in 0.11.0. An unpinned linter makes CI and a
+      # developer's local run disagree about what "clean" means, and lets CI
+      # start failing on a commit that changed nothing.
+      #
+      # Direct invocation: the action emits human prose only. The finding table
+      # this job publishes needs machine-readable output, which is what
+      # `-f json1` gives.
+      #
+      # Bump deliberately, and re-run the suite when you do.
+      - name: Install shellcheck
         env:
-          # Skip sourced files ShellCheck cannot follow.
-          SHELLCHECK_OPTS: -e SC1091
+          SHELLCHECK_VERSION: v0.11.0
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            aarch64|arm64) SC_ARCH=aarch64 ;;
+            x86_64)        SC_ARCH=x86_64 ;;
+            *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
+          esac
+          curl -fsSL --proto '=https' \
+            "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.${SC_ARCH}.tar.xz" \
+            | tar -xJf - -C /tmp
+          sudo install -m 0755 "/tmp/shellcheck-${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
+
+      - name: Run ShellCheck
+        id: run
+        run: |
+          set -uo pipefail
+          # Null-delimited throughout: two directories in this repo have spaces
+          # in their names, and word-splitting them silently lints the wrong
+          # paths or none at all.
+          #
+          # .zsh is absent from these globs deliberately. ShellCheck has no zsh
+          # mode (SC1071); those files are covered by the zsh-syntax job below.
+          #
+          # A read loop rather than `mapfile -d ''`: mapfile needs bash 4, and
+          # macOS still ships bash 3.2. This pattern is shared with the
+          # macOS-runner repos in this fleet, and it costs nothing to keep it
+          # portable here rather than discover the difference over there.
+          files=()
+          while IFS= read -r -d '' f; do files+=("$f"); done \
+            < <(git ls-files -z '*.sh' '*.bash')
+
+          if [ "${#files[@]}" -lt 5 ]; then
+            echo "expected at least 5 shell scripts, found ${#files[@]}" >&2
+            exit 1
+          fi
+
+          # Recorded before the linter runs, so the count is still available to
+          # the summary on a run where shellcheck exits non-zero.
+          echo "checked=${#files[@]}" >> "$GITHUB_OUTPUT"
+
+          # -e SC1091: skip sourced files ShellCheck cannot follow.
+          shellcheck -S warning -e SC1091 -f json1 "${files[@]}" > /tmp/shellcheck.json
+
+      - name: Publish summary
+        if: always()
+        env:
+          CHECKED: ${{ steps.run.outputs.checked }}
+          OUTCOME: ${{ steps.run.outcome }}
+        run: |
+          set -uo pipefail
+          {
+            echo "## ShellCheck"
+            echo
+            echo "\`-S warning -e SC1091\` over ${CHECKED:-0} shell script(s)."
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ ! -s /tmp/shellcheck.json ]; then
+            echo "No machine-readable output was produced; see the step log." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          findings=$(jq '.comments | length' /tmp/shellcheck.json 2>/dev/null || echo unknown)
+          if [ "$findings" = "0" ]; then
+            # An empty comments array is ambiguous: it is what a clean run
+            # produces, and also what a shellcheck that failed to start
+            # produces. Caught in local testing, where a bad file list exited 2
+            # and this summary still cheerfully reported "no findings" -- a
+            # summary that contradicts a red job is worse than no summary.
+            if [ "${OUTCOME:-}" = "success" ]; then
+              echo "**No findings.**" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "**ShellCheck did not complete.** It reported no findings because it failed to run, not because the scripts are clean. See the step log." >> "$GITHUB_STEP_SUMMARY"
+            fi
+          elif [ "$findings" = "unknown" ]; then
+            echo "Output was not valid JSON; see the step log." >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "**${findings} finding(s).**"
+              echo
+              echo "| File | Line | Level | Code | Message |"
+              echo "|---|---:|---|---|---|"
+              jq -r '.comments[]
+                | "| `\(.file)` | \(.line) | \(.level) | [SC\(.code)](https://www.shellcheck.net/wiki/SC\(.code)) | \(.message) |"' \
+                /tmp/shellcheck.json
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   zsh-syntax:
     name: zsh syntax
@@ -44,16 +200,66 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
       - name: Install zsh
         run: sudo apt-get update && sudo apt-get install -y zsh
+
       - name: Syntax-check zsh scripts
+        id: run
         run: |
+          set -uo pipefail
+          : > /tmp/zsh-failures.tsv
+          checked=0
           status=0
+
+          # git ls-files rather than find: it keeps the check to tracked files,
+          # which is what actually ships, and -z survives the spaces in these
+          # paths.
           while IFS= read -r -d '' f; do
-            echo "zsh -n $f"
-            zsh -n "$f" || status=1
-          done < <(find . -name '*.zsh' -type f -not -path './.git/*' -print0)
+            checked=$((checked + 1))
+            if ! err=$(zsh -n "$f" 2>&1); then
+              status=1
+              printf '%s\t%s\n' "$f" "${err//$'\n'/ }" >> /tmp/zsh-failures.tsv
+            fi
+          done < <(git ls-files -z '*.zsh')
+
+          echo "checked=$checked" >> "$GITHUB_OUTPUT"
+
+          if [ "$checked" -lt 6 ]; then
+            echo "expected at least 6 zsh scripts, checked $checked" >&2
+            status=1
+          fi
+
           exit "$status"
+
+      - name: Publish summary
+        if: always()
+        env:
+          CHECKED: ${{ steps.run.outputs.checked }}
+        run: |
+          set -uo pipefail
+          {
+            echo "## zsh syntax"
+            echo
+            echo "\`zsh -n\` over ${CHECKED:-0} script(s)."
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -s /tmp/zsh-failures.tsv ]; then
+            {
+              echo "**Failed.**"
+              echo
+              echo "| File | Error |"
+              echo "|---|---|"
+              while IFS=$'\t' read -r f err; do
+                # Backticks are Markdown, not command substitution.
+                # shellcheck disable=SC2016
+                printf '| `%s` | %s |\n' "$f" "$err"
+              done < /tmp/zsh-failures.tsv
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "**No syntax errors.**" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   markdownlint:
     name: Markdown
@@ -62,7 +268,55 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      # Run the CLI directly, pinned, rather than through the marketplace
+      # action: the action's floating major tag is mutable, and its output is
+      # not available to a later step, which the finding table below needs.
+      # Config discovery is unchanged -- markdownlint-cli2 finds
+      # .markdownlint-cli2.jsonc at the repo root on its own.
       - name: Lint Markdown
-        uses: DavidAnson/markdownlint-cli2-action@v16
-        with:
-          globs: "**/*.md"
+        id: run
+        run: |
+          set -uo pipefail
+          echo "checked=$(git ls-files '*.md' | wc -l | tr -d ' ')" >> "$GITHUB_OUTPUT"
+          npx --yes markdownlint-cli2@0.23.2 "**/*.md" 2>&1 | tee /tmp/markdownlint.txt
+
+      - name: Publish summary
+        if: always()
+        env:
+          CHECKED: ${{ steps.run.outputs.checked }}
+          OUTCOME: ${{ steps.run.outcome }}
+        run: |
+          set -uo pipefail
+          {
+            echo "## Markdown"
+            echo
+            echo "markdownlint-cli2 0.23.2 over ${CHECKED:-0} file(s)."
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ ! -f /tmp/markdownlint.txt ]; then
+            echo "The check did not run; no output to report." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # markdownlint-cli2 prints findings as `path:line[:col] MD### /rule text`.
+          # Anything without that shape is progress chatter and is dropped.
+          if grep -qE '^[^:]+:[0-9]+' /tmp/markdownlint.txt; then
+            {
+              echo "**Findings.**"
+              echo
+              echo "| File | Line | Rule | Detail |"
+              echo "|---|---:|---|---|"
+              # Regex anchor and Markdown backticks, not expansions.
+              # shellcheck disable=SC2016
+              grep -E '^[^:]+:[0-9]+' /tmp/markdownlint.txt \
+                | sed -E 's|^([^:]+):([0-9]+)(:[0-9]+)? +([A-Z]+[0-9]+[^ ]*) +(.*)$|\| `\1` \| \2 \| \4 \| \5 \||'
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${OUTCOME:-}" = "success" ]; then
+            echo "**No findings.**" >> "$GITHUB_STEP_SUMMARY"
+          else
+            # Same ambiguity as the ShellCheck job: no parseable findings is
+            # also what an npx that never installed the linter looks like.
+            echo "**The linter did not complete.** No findings were parsed because it failed to run. See the step log." >> "$GITHUB_STEP_SUMMARY"
+          fi
