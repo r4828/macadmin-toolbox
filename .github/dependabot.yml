@@ -1,0 +1,24 @@
+# Dependabot version updates.
+#
+# Actions are grouped into a single pull request per run. Ungrouped, a weekly
+# sweep across pinned SHAs produces one PR per action, which is how a useful
+# signal turns into noise that gets ignored wholesale.
+#
+# github-actions is the ecosystem that matters most here: every workflow in this
+# fleet pins actions to a full commit SHA with the tag in a trailing comment,
+# and Dependabot is the thing that rewrites both together. Without it a pinned
+# action is simply frozen.
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"
+    labels:
+      - dependencies
+      - ci
