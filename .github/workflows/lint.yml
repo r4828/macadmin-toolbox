@@ -41,6 +41,8 @@ jobs:
           persist-credentials: false
 
       - name: Check MIT attribution headers
+        # pipefail: tee would otherwise swallow the tool's exit status.
+        shell: bash
         run: bash tools/check-license-headers.sh 2>&1 | tee /tmp/license.txt
 
       - name: Publish summary
@@ -146,13 +148,27 @@ jobs:
           echo "checked=${#files[@]}" >> "$GITHUB_OUTPUT"
 
           # -e SC1091: skip sourced files ShellCheck cannot follow.
-          shellcheck -S warning -e SC1091 -f json1 "${files[@]}" > /tmp/shellcheck.json
+          #
+          # The exit code is captured rather than left to -e, because the two
+          # failure codes mean different things: 1 is "found problems", 2 is
+          # "could not process a file". Both fail the step, but only the second
+          # means the report is incomplete, and a findings table rendered over a
+          # partial scan reads as the whole story.
+          #
+          # (Note the wording above avoids opening a comment with the linter's
+          # own name -- a comment beginning "# shellcheck" is parsed as a
+          # directive and fails with SC1073.)
+          rc=0
+          shellcheck -S warning -e SC1091 -f json1 "${files[@]}" > /tmp/shellcheck.json || rc=$?
+          echo "sc_rc=$rc" >> "$GITHUB_OUTPUT"
+          exit "$rc"
 
       - name: Publish summary
         if: always()
         env:
           CHECKED: ${{ steps.run.outputs.checked }}
           OUTCOME: ${{ steps.run.outcome }}
+          SC_RC: ${{ steps.run.outputs.sc_rc }}
         run: |
           set -uo pipefail
           {
@@ -160,6 +176,11 @@ jobs:
             echo
             echo "\`-S warning -e SC1091\` over ${CHECKED:-0} shell script(s)."
             echo
+            if [ "${SC_RC:-0}" -ge 2 ] 2>/dev/null; then
+              echo "> **ShellCheck exited ${SC_RC}, meaning it could not process at least one file.**"
+              echo "> Any table below is therefore a partial result, not the whole scan."
+              echo
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ ! -s /tmp/shellcheck.json ]; then
