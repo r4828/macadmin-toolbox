@@ -78,18 +78,32 @@ jobs:
         # --log-opts replaces gitleaks' defaults, so retain all of them here.
         run: gitleaks git --log-opts="--full-history --all --diff-filter=tuxdb --diff-merges=first-parent" --redact --report-format json --report-path "$RUNNER_TEMP/gitleaks.json" .
 
-      # A venv rather than a bare pip install. Debian-based runners ship no
-      # system pip and mark the interpreter EXTERNALLY-MANAGED, so `pip install`
-      # fails as "command not found" on a self-hosted host -- which reads like a
-      # broken runner rather than a missing package.
+      # Install the release binary from an archive with a committed digest.
+      # This avoids an unverified pip dependency chain on the runner.
       - name: Install zizmor
         id: install-zizmor
         if: ${{ !cancelled() && inputs.zizmor }}
+        env:
+          ZIZMOR_VERSION: 1.26.1
+          ZIZMOR_SHA256_X64: 8556289a64e7aaf2400cd516f61a471aa91c5902cc56ad96a82fd12f90c2ef73
+          ZIZMOR_SHA256_ARM64: 711f5af366b299128f9a04b1470e37d990b41fbd21f14a1a4148d25004a83762
         run: |
           set -euo pipefail
-          python3 -m venv "$RUNNER_TEMP/zizmor-venv"
-          "$RUNNER_TEMP/zizmor-venv/bin/pip" install --no-cache-dir --quiet zizmor==1.26.1
-          echo "$RUNNER_TEMP/zizmor-venv/bin" >> "$GITHUB_PATH"
+          case "$(uname -m)" in
+            aarch64|arm64) ZM_ARCH=aarch64; ZM_SHA="$ZIZMOR_SHA256_ARM64" ;;
+            x86_64)        ZM_ARCH=x86_64; ZM_SHA="$ZIZMOR_SHA256_X64" ;;
+            *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
+          esac
+          base="https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR_VERSION}"
+          tarball="zizmor-${ZM_ARCH}-unknown-linux-gnu.tar.gz"
+          workdir="$RUNNER_TEMP/zizmor-install"
+          rm -rf "$workdir"; mkdir -p "$workdir"
+          curl -fsSL --proto '=https' -o "${workdir}/${tarball}" "${base}/${tarball}"
+          printf '%s  %s\n' "$ZM_SHA" "$tarball" > "${workdir}/expected.sha256"
+          (cd "$workdir" && sha256sum -c expected.sha256)
+          tar -xzf "${workdir}/${tarball}" -C "$workdir" zizmor
+          sudo install -m 0755 "${workdir}/zizmor" /usr/local/bin/zizmor
+          zizmor --version
 
       - name: Run zizmor
         id: zizmor
@@ -136,6 +150,9 @@ jobs:
               else
                 echo "**The scan did not complete.** An empty report here means it failed to run, not that the history is clean."
               fi
+              echo
+            elif [ "${GITLEAKS:-}" != skipped ] && [ "${GITLEAKS:-}" != success ]; then
+              echo "**The gitleaks scan did not complete; no report was produced.**"
               echo
             fi
 
