@@ -1,12 +1,6 @@
 name: Security scan
 
-# A five-line call into the shared definition, so gitleaks and zizmor are
-# maintained in one place rather than nine. The pin is a commit SHA rather than
-# a branch, for the same reason the actions inside it are pinned: a branch
-# reference is mutable and can be retargeted upstream.
-#
-# What it does and why it does it that way:
-# https://github.com/r4828/ci-workflows
+# Keep the reusable scan in this repository so public workflow runs can access it.
 
 on:
   push:
@@ -18,4 +12,4 @@ permissions:
 
 jobs:
   scan:
-    uses: r4828/ci-workflows/.github/workflows/security-scan.yml@aa927fad46b924bb203e28b004e689c26b8ad878
+    uses: ./.github/workflows/security-scan-core.yml

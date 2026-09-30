@@ -1,0 +1,165 @@
+name: Security scan
+
+# Scan commit history with gitleaks and audit workflows with zizmor.
+
+on:
+  workflow_call:
+    inputs:
+      gitleaks:
+        description: Scan the full commit history for secrets.
+        type: boolean
+        default: true
+      zizmor:
+        description: Audit .github/workflows for insecure patterns.
+        type: boolean
+        default: true
+      zizmor-path:
+        description: Directory of workflows to audit.
+        type: string
+        default: .github/workflows
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: gitleaks and zizmor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Full history: gitleaks scans every commit, not the tip. A shallow
+          # clone would report a clean history it never looked at.
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Pinned to a version and verified against a digest committed here.
+      #
+      # Fetching a checksum from the same host that served the tarball proves
+      # only that the download was not corrupted in transit -- anyone able to
+      # serve a malicious binary can serve a matching checksum beside it. A
+      # digest in this repository is a value a human reviewed.
+      #
+      # Reproducibility matters as much: an unpinned scanner means a release
+      # that retunes a rule changes the verdict on a commit that did not change,
+      # so a newly red run cannot be told from a newly strict rule.
+      - name: Install gitleaks
+        if: inputs.gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256_X64: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          GITLEAKS_SHA256_ARM64: e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            aarch64|arm64) GL_ARCH=arm64; GL_SHA="$GITLEAKS_SHA256_ARM64" ;;
+            x86_64)        GL_ARCH=x64;   GL_SHA="$GITLEAKS_SHA256_X64" ;;
+            *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
+          esac
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_${GL_ARCH}.tar.gz"
+          # $RUNNER_TEMP, not mktemp -d: the runner empties it between jobs,
+          # and these workflows also run on a persistent self-hosted host where
+          # a unique directory per run accumulates until the disk fills.
+          workdir="$RUNNER_TEMP/gitleaks-install"
+          rm -rf "$workdir"; mkdir -p "$workdir"
+          curl -fsSL --proto '=https' -o "${workdir}/${tarball}" "${base}/${tarball}"
+          printf '%s  %s\n' "$GL_SHA" "$tarball" > "${workdir}/expected.sha256"
+          (cd "$workdir" && sha256sum -c expected.sha256)
+          tar -xzf "${workdir}/${tarball}" -C "$workdir" gitleaks
+          sudo install -m 0755 "${workdir}/gitleaks" /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Run gitleaks
+        id: gitleaks
+        if: inputs.gitleaks
+        continue-on-error: true
+        run: gitleaks git --redact --report-format json --report-path "$RUNNER_TEMP/gitleaks.json" .
+
+      # A venv rather than a bare pip install. Debian-based runners ship no
+      # system pip and mark the interpreter EXTERNALLY-MANAGED, so `pip install`
+      # fails as "command not found" on a self-hosted host -- which reads like a
+      # broken runner rather than a missing package.
+      - name: Install zizmor
+        if: inputs.zizmor
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/zizmor-venv"
+          "$RUNNER_TEMP/zizmor-venv/bin/pip" install --no-cache-dir --quiet zizmor==1.26.1
+          echo "$RUNNER_TEMP/zizmor-venv/bin" >> "$GITHUB_PATH"
+
+      - name: Run zizmor
+        id: zizmor
+        if: inputs.zizmor
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ZIZMOR_PATH: ${{ inputs.zizmor-path }}
+        run: zizmor --format=github "$ZIZMOR_PATH"
+
+      - name: Publish summary
+        if: ${{ !cancelled() }}
+        env:
+          GITLEAKS: ${{ steps.gitleaks.outcome }}
+          ZIZMOR: ${{ steps.zizmor.outcome }}
+        run: |
+          set -uo pipefail
+          v() { case "$1" in success) printf 'ok';; skipped|'') printf 'not run';; *) printf '**%s**' "$1";; esac; }
+          {
+            echo "## Security scan"
+            echo
+            echo "| Scanner | Result |"
+            echo "|---|---|"
+            printf '| gitleaks | %s |\n' "$(v "${GITLEAKS:-}")"
+            printf '| zizmor | %s |\n' "$(v "${ZIZMOR:-}")"
+            echo
+
+            r="$RUNNER_TEMP/gitleaks.json"
+            if [ -f "$r" ]; then
+              n=$(jq 'length' "$r" 2>/dev/null || echo unknown)
+              if [ "$n" = 0 ] && [ "${GITLEAKS:-}" = success ]; then
+                echo "**No leaks found.**"
+              elif [ "$n" != 0 ] && [ "$n" != unknown ]; then
+                # File, line and rule only. --redact already removes the secret,
+                # but a job summary is readable by anyone with repository read
+                # access and outlives the run -- a scanner that reprinted what
+                # it found would be a worse leak than the one it detected.
+                echo "**${n} finding(s).** The secrets are not reproduced here; use the file and line."
+                echo
+                echo "| File | Line | Rule |"
+                echo "|---|---:|---|"
+                # shellcheck disable=SC2016
+                jq -r '.[] | "| `\(.File | gsub("\\|"; "\\|"))` | \(.StartLine) | \(.RuleID) |"' "$r"
+              else
+                echo "**The scan did not complete.** An empty report here means it failed to run, not that the history is clean."
+              fi
+              echo
+            fi
+
+            if [ "${ZIZMOR:-}" != success ] && [ "${ZIZMOR:-}" != skipped ] && [ -n "${ZIZMOR:-}" ]; then
+              echo "_zizmor reported findings; they are annotated on the diff and in the step log._"
+              echo
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Both scanners run under continue-on-error so one failing does not hide
+      # the other's result. This is the only thing that fails the job.
+      - name: Fail if either scanner failed
+        if: ${{ !cancelled() }}
+        env:
+          GITLEAKS: ${{ steps.gitleaks.outcome }}
+          ZIZMOR: ${{ steps.zizmor.outcome }}
+        run: |
+          set -uo pipefail
+          rc=0
+          for pair in "gitleaks:${GITLEAKS:-}" "zizmor:${ZIZMOR:-}"; do
+            name=${pair%%:*}; got=${pair##*:}
+            case "$got" in
+              success) printf '  ok      %s\n' "$name" ;;
+              # skipped is legitimate here: each scanner is opt-out by input.
+              skipped) printf '  skipped %s (disabled by input)\n' "$name" ;;
+              "")      printf '  skipped %s (disabled by input)\n' "$name" ;;
+              *)       printf '  FAILED  %s (%s)\n' "$name" "$got"; rc=1 ;;
+            esac
+          done
+          exit "$rc"
