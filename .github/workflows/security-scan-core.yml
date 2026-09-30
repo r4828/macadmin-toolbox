@@ -74,14 +74,17 @@ jobs:
         id: gitleaks
         if: inputs.gitleaks
         continue-on-error: true
-        run: gitleaks git --redact --report-format json --report-path "$RUNNER_TEMP/gitleaks.json" .
+        # Include patches made by merge conflict resolution. Supplying
+        # --log-opts replaces gitleaks' defaults, so retain all of them here.
+        run: gitleaks git --log-opts="--full-history --all --diff-filter=tuxdb --diff-merges=first-parent" --redact --report-format json --report-path "$RUNNER_TEMP/gitleaks.json" .
 
       # A venv rather than a bare pip install. Debian-based runners ship no
       # system pip and mark the interpreter EXTERNALLY-MANAGED, so `pip install`
       # fails as "command not found" on a self-hosted host -- which reads like a
       # broken runner rather than a missing package.
       - name: Install zizmor
-        if: inputs.zizmor
+        id: install-zizmor
+        if: ${{ !cancelled() && inputs.zizmor }}
         run: |
           set -euo pipefail
           python3 -m venv "$RUNNER_TEMP/zizmor-venv"
@@ -90,7 +93,7 @@ jobs:
 
       - name: Run zizmor
         id: zizmor
-        if: inputs.zizmor
+        if: ${{ !cancelled() && inputs.zizmor && steps.install-zizmor.outcome == 'success' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
